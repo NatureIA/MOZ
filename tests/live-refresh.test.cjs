@@ -40,5 +40,13 @@ assert.equal(w.activationButton({...pending,trackingActive:true},'operator'),'')
 assert.equal(w.activationButton({...pending,status:'Finalizada'},'operator'),'');
 assert.equal(w.activationButton({...pending,status:'Cancelada'},'operator'),'');
 assert.equal(w.activationButton({...pending,started:'2026-11-26'},'operator'),'');
+const sidebarStart=app.indexOf('const sidebarIcons='),sidebarEnd=app.indexOf('async function render()',sidebarStart);
+assert.ok(sidebarStart>=0&&sidebarEnd>sidebarStart);
+w.eval("let me={id:'demo',role:'operator'};"+app.slice(sidebarStart,sidebarEnd));
+const workspace=doc.createElement('div');workspace.className='workspace';workspace.innerHTML='<aside class="side"><button id="sidebarToggle"></button>'+w.nav()+'</aside><section id="stableContent">Tela atual</section>';doc.body.append(workspace);
+assert.equal(workspace.querySelectorAll('.nav button svg').length,5);
+const originalContent=workspace.querySelector('#stableContent');
+w.applySidebar(workspace,true);assert.ok(workspace.classList.contains('sidebar-collapsed'));assert.equal(workspace.querySelector('#sidebarToggle').getAttribute('aria-expanded'),'false');assert.equal(workspace.querySelector('#navTrips').getAttribute('aria-label'),'Tracking de viagens');
+w.applySidebar(workspace,false);assert.ok(!workspace.classList.contains('sidebar-collapsed'));assert.equal(workspace.querySelector('#sidebarToggle').getAttribute('aria-expanded'),'true');assert.equal(workspace.querySelector('#stableContent'),originalContent);
 dom.window.close();
 console.log('Live update: stable row, focus, scroll, map and camera.');
