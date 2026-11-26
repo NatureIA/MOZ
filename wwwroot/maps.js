@@ -48,15 +48,15 @@ const lineFeatures=lines=>collection(lines.filter(x=>x.length>=2).map(coordinate
 function route(id,fixes,stages,gap,plan,stops=[],matched=[]){
  const el=document.getElementById(id);if(!el)return;const ps=fixes.filter(valid);
  let planned=[];if(plan?.coordinates){try{planned=[JSON.parse(plan.coordinates).map(p=>[p[1],p[0]])]}catch{}}
- const layers={fences:collection(stages.filter(valid).map(circle)),planned:lineFeatures(planned),route:lineFeatures(observedLines(ps,gap)),matched:lineFeatures(matched),evidence:collection(ps.map(p=>point(p,{}))),stages:collection(stages.filter(valid).map(p=>point(p,{label:p.label}))),stops:collection(stops.filter(valid).map((p,i)=>point(p,{label:'Parada '+(i+1)+' · '+Math.floor(p.durationSeconds/3600)+'h '+Math.floor(p.durationSeconds%3600/60)+'min · '+(p.stageLabel||'Fora de etapa registrada')+' · '+new Date(p.start).toLocaleString('pt-BR')}))),last:collection(ps.length?[point(ps.at(-1),{label:'Última posição registrada'})]:[])};
+ const layers={fences:collection(stages.filter(valid).map(circle)),planned:lineFeatures(planned),matched:lineFeatures(matched),evidence:collection(ps.map(p=>point(p,{}))),stages:collection(stages.filter(valid).map(p=>point(p,{label:p.label}))),stops:collection(stops.filter(valid).map((p,i)=>point(p,{label:'Parada '+(i+1)+' · '+Math.floor(p.durationSeconds/3600)+'h '+Math.floor(p.durationSeconds%3600/60)+'min · '+(p.stageLabel||'Fora de etapa registrada')+' · '+new Date(p.start).toLocaleString('pt-BR')}))),last:collection(ps.length?[point(ps.at(-1),{label:'Última posição registrada'})]:[])};
  let state=routeViews.get(id);
  if(state&&state.el===el){for(const [name,data] of Object.entries(layers)){const sig=JSON.stringify(data);if(state.signatures[name]===sig)continue;state.signatures[name]=sig;state.layers[name]=data;const src=state.map.getSource(name);if(src)src.setData(data)}return;}
  const m=map(id,[...ps,...stages,...stops]);if(!m)return;state={el,map:m,layers,signatures:Object.fromEntries(Object.entries(layers).map(([k,v])=>[k,JSON.stringify(v)]))};routeViews.set(id,state);
  m.on('load',()=>{if(routeViews.get(id)!==state)return;
  const L=state.layers,addLine=(name,color,width,dash)=>{source(m,name,L[name]);m.addLayer({id:name+'-line',type:'line',source:name,paint:{'line-color':color,'line-width':width,...(dash?{'line-dasharray':dash}:{})}})};
  source(m,'fences',L.fences);m.addLayer({id:'fence-fill',type:'fill',source:'fences',paint:{'fill-color':'#8b5cf6','fill-opacity':.12}});m.addLayer({id:'fence-line',type:'line',source:'fences',paint:{'line-color':'#7348d5','line-width':2}});
- addLine('planned','#7954b8',3,[2,2]);addLine('matched','#218c7a',5,[2,1]);addLine('route','#3f63e8',3);
- source(m,'evidence',L.evidence);m.addLayer({id:'gps-evidence-points',type:'circle',source:'evidence',paint:{'circle-color':'#3f63e8','circle-radius':2,'circle-opacity':0.65}});
+ addLine('planned','#7954b8',3,[2,2]);addLine('matched','#2461db',5);
+ source(m,'evidence',L.evidence);m.addLayer({id:'gps-evidence-points',type:'circle',source:'evidence',paint:{'circle-color':'#7d8799','circle-radius':2.4,'circle-opacity':0.8}});
  markers(m,'stages',L.stages.features,'#da9c37');markers(m,'stops',L.stops.features,'#b33e43');markers(m,'last',L.last.features,'#1b956d');
  });
 }
