@@ -72,3 +72,6 @@ button.fleet-plate:hover,button.fleet-plate:focus-visible{background:#44368d;col
 .sidebar-collapsed .main-area{padding-left:8px;padding-right:8px}
 }
 }
+
+/* The route line represents matching on road geometry, not a chord between GPS fixes. */
+.legend-match{width:20px;border-top:4px solid #2461db}.legend-gps{width:8px;height:8px;border-radius:50%;background:#7d8799;display:inline-block}
