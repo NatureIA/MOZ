@@ -62,6 +62,20 @@ public static class Api {
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();var id=u!.TenantId;
  return Results.Ok(new{clients=await db.Clients.Where(x=>x.TenantId==id).ToListAsync(),drivers=await db.OperatorDrivers.Where(x=>x.TenantId==id).OrderBy(x=>x.Name).Select(x=>new{x.Cpf,x.Name}).ToListAsync(),registry=await db.Registry.Where(x=>x.TenantId==id).ToListAsync(),places=await db.Places.Where(x=>x.TenantId==id).ToListAsync(),users=await db.Users.Where(x=>x.TenantId==id).Select(x=>new{x.Id,x.Name,x.Login,x.Role,x.ClientId,x.Active}).ToListAsync()});
  });
+ // Reuse only the current operator's registrations and successfully saved trips.
+ api.MapGet("/trip-options",async(HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
+ var tenant=u!.TenantId!.Value;var q=db.Trips.AsNoTracking().Where(t=>t.TenantId==tenant);
+ var history=await q.Where(t=>t.DriverCpf!=""&&t.DriverName!="")
+ .GroupBy(t=>t.DriverCpf).Select(g=>g.OrderByDescending(t=>t.Created).ThenByDescending(t=>t.Id).Select(t=>new{Cpf=t.DriverCpf,Name=t.DriverName}).First()).ToListAsync(c.RequestAborted);
+ var local=await db.OperatorDrivers.AsNoTracking().Where(d=>d.TenantId==tenant).Select(d=>new{d.Cpf,d.Name}).ToListAsync(c.RequestAborted);
+ var drivers=local.Concat(history).Where(d=>Engine.ValidCpf(d.Cpf)&&!string.IsNullOrWhiteSpace(d.Name)).GroupBy(d=>d.Cpf).Select(g=>g.First()).OrderBy(d=>d.Name,StringComparer.CurrentCultureIgnoreCase).ThenBy(d=>d.Cpf).ToList();
+ var registry=await db.Registry.AsNoTracking().Where(r=>r.TenantId==tenant&&r.Active&&(r.Kind=="Cavalo"||r.Kind=="Carreta")).Select(r=>new{r.Kind,r.Reference}).ToListAsync(c.RequestAborted);
+ var tractors=await q.Where(t=>t.Tractor!="").Select(t=>t.Tractor).Distinct().ToListAsync(c.RequestAborted);
+ var trailers=await q.Where(t=>t.Trailer!="").Select(t=>t.Trailer).Distinct().ToListAsync(c.RequestAborted);
+ string[] Plates(IEnumerable<string> values)=>values.Where(s=>!string.IsNullOrWhiteSpace(s)).Select(s=>s.Trim()).Where(s=>s.Length<=160).GroupBy(s=>s.ToUpperInvariant().Replace("-","").Replace(" ","")).Select(g=>g.First()).OrderBy(s=>s,StringComparer.OrdinalIgnoreCase).ToArray();
+ return Results.Ok(new{drivers,tractors=Plates(registry.Where(r=>r.Kind=="Cavalo").Select(r=>r.Reference).Concat(tractors)),trailers=Plates(registry.Where(r=>r.Kind=="Carreta").Select(r=>r.Reference).Concat(trailers))});
+ });
  api.MapPost("/clients",async(ClientInput x,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
  var cnpj=NormalizeCnpj(x.Cnpj);if(!TextOk(x.Name)||cnpj==null)return Bad("Informe a razão social e um CNPJ válido.");
