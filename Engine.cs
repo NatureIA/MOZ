@@ -62,6 +62,9 @@ public sealed record GpsStop(DateTimeOffset Start,DateTimeOffset LastEvidence,do
 public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  readonly List<GpsStop> stops=new();
  Fix? previous,first,stationary;
+ double? previousSpeed;
+ readonly Dictionary<Guid,DateTimeOffset> lastInside=new();
+ public DateTimeOffset? LastInside(Guid stageId)=>lastInside.TryGetValue(stageId,out var at)?at:null;
  bool completed;
  void Close(string state){
  if(first!=null&&stationary!=null){
@@ -75,9 +78,10 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  public void Add(Fix f){
  if(completed)throw new InvalidOperationException("Audit already completed");
  if(!f.Accepted||!Engine.ValidPoint(f.Lat,f.Lon))return;
+ foreach(var s in stages){if(s.Arrived is {} arrived&&f.At>=arrived&&(s.Departed==null||f.At<=s.Departed)&&Engine.Contains(f.Lat,f.Lon,s.Lat,s.Lon,s.Radius,s.Polygon))lastInside[s.Id]=f.At;}
  if(previous!=null){
  if(f.At<=previous.At)return;
- if(f.TrackingSince!=previous.TrackingSince||(f.At-previous.At).TotalSeconds>trip.GapSeconds){Close(f.TrackingSince!=previous.TrackingSince?"Autorização interrompida":"Lacuna GPS");previous=null;}
+ if(f.TrackingSince!=previous.TrackingSince||(f.At-previous.At).TotalSeconds>trip.GapSeconds){Close(f.TrackingSince!=previous.TrackingSince?"Autorização interrompida":"Lacuna GPS");previous=null;previousSpeed=null;}
  }
  double? speed=f.Speed;
  if(speed==null&&previous!=null){
@@ -87,10 +91,10 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  }
  if(speed is <=3){
  if(first!=null&&Engine.Distance(first.Lat,first.Lon,f.Lat,f.Lon)>Math.Max(30,Math.Max(first.Accuracy,f.Accuracy)*2))Close("Deslocamento detectado");
- first??=(previous!=null&&f.Speed==null&&previous.Speed is null or <=3?previous:f);
+ first??=(previous!=null&&f.Speed==null&&(previousSpeed is null or <=3)?previous:f);
  stationary=f;
  }else if(speed!=null)Close("Retomada do movimento");
- previous=f;
+ previous=f;previousSpeed=speed;
  }
  public IReadOnlyList<GpsStop> Complete(DateTimeOffset now){
  if(completed)return stops;
