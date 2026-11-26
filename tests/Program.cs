@@ -76,4 +76,6 @@ var evidence=new Pod{StageId=deliveryStage.Id,LocationVerified=true,Captured=epo
 var metrics=TripTiming.Measure(new Trip{Status="Finalizada",Started=epoch,Finished=evidence.Captured},new[]{collectionStage,deliveryStage},new[]{evidence},_=>null);
 Check(metrics.LoadingSeconds==3600&&metrics.UnloadingSeconds==1800&&metrics.HandlingSeconds==5400&&metrics.TravelSeconds==10800,"cargo dwell, verified POD, journey duration");
 Check(TripTiming.Measure(new Trip(),new[]{collectionStage,deliveryStage},Array.Empty<Pod>(),_=>null).UnloadingSeconds==null,"missing evidence not invented");
+var dense=new[]{Position(0,30),Position(5,30,lat:-27.8098),Position(10,30,lat:-27.8096),Position(15,30,lat:-27.79)};
+Check(RoadTrace.DenseSegments(dense,120).Count==1&&RoadTrace.DenseSegments(dense,120)[0].Count==3,"map matching never bridges a large GPS gap");
 Console.WriteLine("Geometry and input rules passed.");
