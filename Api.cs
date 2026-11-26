@@ -115,8 +115,9 @@ public static class Api {
  var t=new Trip{TenantId=tenant.Id,ClientId=x.ClientId,DriverCpf=cpf,DriverId=driver?.Id,DriverName=driver?.Name??localDriver?.Name??x.DriverName?.Trim()??"",Carrier=x.Carrier??"",Tractor=x.Tractor??"",Trailer=x.Trailer??"",Container=reference,Scheduled=x.Scheduled,SpeedLimit=x.SpeedLimit,MaxAccuracy=x.MaxAccuracy,StopSeconds=x.StopSeconds,GapSeconds=x.GapSeconds,Code="MOZ-"+Guid.NewGuid().ToString("N").ToUpperInvariant()};
  if(!string.IsNullOrWhiteSpace(x.PlannedRoute)&&(!Engine.ValidRoute(x.PlannedRoute)||x.RouteTolerance is <30 or >10000))return Bad("Rota planejada ou tolerância inválida.");
  var stages=new List<Stage>();
- for(int i=0;i<x.Stages.Length;i++){var s=x.Stages[i];var p=await db.Places.SingleOrDefaultAsync(z=>z.Id==s.PlaceId&&z.TenantId==tenant.Id);if(p==null||!TextOk(s.Label)||s.SlaMinutes<0||s.FinishOnPod&&!s.RequirePod)return Bad("Etapa inválida.");
- stages.Add(new Stage{TripId=t.Id,Order=i,Label=s.Label,Kind=s.Kind??"",Address=p.Address,Lat=p.Lat,Lon=p.Lon,Radius=p.Radius,Polygon=p.Polygon,RequirePod=s.RequirePod,FinishOnPod=s.FinishOnPod,SlaMinutes=s.SlaMinutes});}
+ if(!Engine.ValidCargoRoles(x.Stages.Select(s=>s.CargoRole)))return Bad("Identifique uma etapa como origem da carga e outra como destino da entrega, nesta ordem.");
+ for(int i=0;i<x.Stages.Length;i++){var s=x.Stages[i];var p=await db.Places.SingleOrDefaultAsync(z=>z.Id==s.PlaceId&&z.TenantId==tenant.Id);if(p==null||!TextOk(s.Label)||s.SlaMinutes<0||s.FinishOnPod&&!s.RequirePod&&s.CargoRole!="destination")return Bad("Etapa inválida.");
+ stages.Add(new Stage{TripId=t.Id,Order=i,Label=s.Label,Kind=s.Kind??"",CargoRole=string.IsNullOrEmpty(s.CargoRole)?null:s.CargoRole,Address=p.Address,Lat=p.Lat,Lon=p.Lon,Radius=p.Radius,Polygon=p.Polygon,RequirePod=s.RequirePod||s.CargoRole=="destination",FinishOnPod=s.FinishOnPod||(s.CargoRole=="destination"&&i==x.Stages.Length-1),SlaMinutes=s.SlaMinutes});}
  // Serializa programações do mesmo operador no SQL Server, inclusive em múltiplas instâncias.
  // A referência informada reaproveita a coluna Container; Code continua sendo o ID único do MOZ.
  await using var transaction=await db.Database.BeginTransactionAsync();
@@ -155,7 +156,7 @@ public static class Api {
  var stageTimes=stages.Select(s=>new{s.Id,s.Label,s.Kind,s.Arrived,s.Departed,s.WorkStart,s.WorkEnd,lastInside=detector.LastInside(s.Id),permanenceSeconds=Duration(s.Arrived,s.Departed??detector.LastInside(s.Id)),workSeconds=Duration(s.WorkStart,s.WorkEnd)}).ToList();
  return Results.Ok(new{stops,stageTimes,minimumStopSeconds=t.StopSeconds,lastEvidence=t.LastFix,elapsedSeconds=Duration(t.Started,t.Finished??now),terminal,movingSeconds=t.MovingSeconds,idleSeconds=t.IdleSeconds,yardPermanenceSeconds=stageTimes.Any(s=>s.permanenceSeconds!=null)?stageTimes.Sum(s=>s.permanenceSeconds):(double?)null,stopSeconds=stops.Sum(s=>s.DurationSeconds),routeStopSeconds=stops.Where(s=>s.StageId==null).Sum(s=>s.DurationSeconds),yardStopSeconds=stops.Where(s=>s.StageId!=null).Sum(s=>s.DurationSeconds)});
  });
- api.MapPost("/trips/{id:guid}/action",async(Guid id,ActionInput x,HttpContext c,MozDb db)=>{
+ api.MapPost("/trips/{id:guid}/action",async(Guid id,ActionInput x,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);if(t==null)return Results.NotFound();
  if(Engine.Terminal(t))return Bad("Viagem encerrada.");
  var s=await CurrentStage(db,t);
@@ -174,9 +175,9 @@ public static class Api {
  else if(x.Action=="occurrence"&&(u.Role is "driver" or "operator")&&TextOk(x.Message,1000)){db.Events.Add(Engine.Event(t,"Ocorrência",x.Message!,u.Role,actor:u.Id,stage:s));}
  else if(x.Action=="cancel"&&u.Role=="operator"&&TextOk(x.Message,1000)){t.Status="Cancelada";t.Finished=DateTimeOffset.UtcNow;t.TrackingSince=null;db.Events.Add(Engine.Event(t,"Cancelada",x.Message!,"Operador",actor:u.Id));}
  else return Bad("Ação indisponível para este estado.");
- Record(db,u,x.Action,t.Id.ToString());return await Save(db);
+ Record(db,u,x.Action,t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){try{await MozRealtime.Publish(hub,t);}catch{}}return result;
  });
- api.MapPost("/trips/{id:guid}/fixes",async(Guid id,FixInput[] input,HttpContext c,MozDb db)=>{
+ api.MapPost("/trips/{id:guid}/fixes",async(Guid id,FixInput[] input,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(u?.Role!="driver")return Results.Forbid();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);
  if(t==null)return Results.NotFound();
  if(input==null||input.Length is <1 or >100)return Bad("Lote inválido.");
@@ -194,9 +195,10 @@ public static class Api {
  var f=new Fix{Id=x.Id,TripId=id,At=x.At,TrackingSince=x.TrackingSince,Lat=x.Lat,Lon=x.Lon,Accuracy=x.Accuracy,Speed=x.Speed,Accepted=valid};db.Fixes.Add(f);
  var old=t.CurrentStage;Engine.Process(t,stage,count,f,db);Engine.AuditRoute(t,plan,f,db);if(t.CurrentStage!=old)stage=await CurrentStage(db,t);processed.Add(x.Id);
  }
- try{await db.SaveChangesAsync();return Results.Ok(new{acceptedIds=processed,discardIds=discarded,status=t.Status,trackingActive=Engine.TrackingActive(t)});}catch(DbUpdateException){return Results.Conflict(new{error="Lote concorrente; tente novamente."});}
+ var hasEvents=db.ChangeTracker.Entries<EventLog>().Any(e=>e.State==EntityState.Added);
+ try{await db.SaveChangesAsync();if(hasEvents){try{await MozRealtime.Publish(hub,t);}catch{}}return Results.Ok(new{acceptedIds=processed,discardIds=discarded,status=t.Status,trackingActive=Engine.TrackingActive(t)});}catch(DbUpdateException){return Results.Conflict(new{error="Lote concorrente; tente novamente."});}
  });
- api.MapPost("/trips/{id:guid}/pod",async(Guid id,HttpContext c,MozDb db)=>{
+ api.MapPost("/trips/{id:guid}/pod",async(Guid id,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(u?.Role!="driver")return Results.Forbid();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);if(t==null)return Results.NotFound();
  if(!c.Request.HasFormContentType)return Bad("Envie uma fotografia ou PDF.");
  var form=await c.Request.ReadFormAsync();if(!Guid.TryParse(form["id"].ToString(),out var podId))return Bad("Identificador inválido.");
@@ -215,10 +217,10 @@ public static class Api {
  bool verified=pos!=null&&Engine.Contains(pos.Lat,pos.Lon,s.Lat,s.Lon,s.Radius,s.Polygon);
  var doc=new Pod{Id=podId,TripId=id,StageId=s.Id,DriverId=u.Id,ContentType=mime,FileName="comprovante"+ext,Bytes=data.LongLength,Sha256=Convert.ToHexString(SHA256.HashData(data)),Captured=captured,Lat=pos?.Lat,Lon=pos?.Lon,Accuracy=pos?.Accuracy,LocationVerified=verified};
  var path=Path.Combine(storage,podId.ToString("N"));try{await using(var fs=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None)){await fs.WriteAsync(data);await fs.FlushAsync();}}catch(IOException){return Results.Conflict(new{error="Documento já está sendo processado."});}
- db.Pods.Add(doc);db.Events.Add(Engine.Event(t,"Comprovante recebido",verified?"Comprovante armazenado com localização compatível":"Comprovante armazenado; localização não verificada","Motorista",captured,actor:u.Id,stage:s));
+ db.Pods.Add(doc);db.Events.Add(Engine.Event(t,verified&&s.CargoRole=="destination"?"Entrega comprovada":"Comprovante recebido",verified?(s.CargoRole=="destination"?"Comprovante de entrega recebido com localização compatível":"Comprovante armazenado com localização compatível"):"Comprovante armazenado; localização não verificada","Motorista",captured,actor:u.Id,stage:s));
  if(s.FinishOnPod&&verified){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,captured);}
  else if(s.Departed!=null){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,s.Departed.Value>captured?s.Departed.Value:captured);}
- try{await db.SaveChangesAsync();return Results.Ok(new{status=t.Status,id=doc.Id});}catch{File.Delete(path);throw;}
+ try{await db.SaveChangesAsync();}catch{File.Delete(path);throw;}try{await MozRealtime.Publish(hub,t);}catch{}return Results.Ok(new{status=t.Status,id=doc.Id});
  });
  api.MapGet("/pods/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var p=await db.Pods.SingleOrDefaultAsync(x=>x.Id==id);if(p==null||!await Visible(db,u).AnyAsync(x=>x.Id==p.TripId))return Results.NotFound();
@@ -259,7 +261,7 @@ public record OperatorDriverInput(string Name,string? Cpf);
 public record UserInput(string Name,string Email,string Password,string Role,Guid? ClientId);
 public record RegistryInput(string Kind,string Name,string Reference);
 public record PlaceInput(string Name,string Address,double Lat,double Lon,double Radius,string? Polygon,Guid? ParentId);
-public record StageInput(Guid PlaceId,string Label,string? Kind,bool RequirePod,bool FinishOnPod,int SlaMinutes);
+public record StageInput(Guid PlaceId,string Label,string? Kind,bool RequirePod,bool FinishOnPod,int SlaMinutes,string? CargoRole=null);
 public record TripInput(Guid ClientId,string DriverCpf,string? Carrier,string? Tractor,string? Trailer,string? Container,DateTimeOffset Scheduled,double SpeedLimit,double MaxAccuracy,int StopSeconds,int GapSeconds,StageInput[] Stages,string? PlannedRoute=null,double RouteTolerance=200,string? DriverName=null,string? TripReference=null);
 public record ActionInput(string Action,string? Message);
 public record FixInput(Guid Id,DateTimeOffset At,double Lat,double Lon,double Accuracy,double? Speed,DateTimeOffset? TrackingSince=null);
