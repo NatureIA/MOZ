@@ -26,7 +26,7 @@ b.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBeare
  o.TokenValidationParameters=new(){ValidateIssuer=true,ValidIssuer=issuer,ValidateAudience=true,ValidAudience=audience,ValidateIssuerSigningKey=true,IssuerSigningKey=signing,ValidateLifetime=true,ClockSkew=TimeSpan.FromSeconds(30),NameClaimType="sub",RoleClaimType="role"};
  o.Events=new JwtBearerEvents{OnMessageReceived=c=>{c.Token=c.Request.Cookies["moz_session"];return Task.CompletedTask;}};
 });
-b.Services.AddAuthorization();b.Services.AddSignalR();
+b.Services.AddAuthorization();b.Services.AddSignalR();b.Services.AddSingleton<RoadTrace>();
 var keysPath=Path.GetFullPath(cfg["DataProtection:KeysPath"]??"../private/keys",b.Environment.ContentRootPath);
 b.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysPath)).SetApplicationName("MOZ");
 b.Services.AddRateLimiter(o=>{o.RejectionStatusCode=429;o.AddPolicy("auth",c=>RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new FixedWindowRateLimiterOptions{PermitLimit=12,Window=TimeSpan.FromMinutes(1),QueueLimit=0}));});
@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.8",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.9",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{

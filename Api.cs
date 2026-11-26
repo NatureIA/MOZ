@@ -137,11 +137,19 @@ public static class Api {
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();
  var client=Operator(u)?await db.Clients.SingleOrDefaultAsync(z=>z.Id==t.ClientId&&z.TenantId==u.TenantId):null;
- return Results.Ok(new{trip=TripView(t,u,client),plan=await db.Plans.SingleOrDefaultAsync(x=>x.TripId==id),stages=await db.Stages.Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(),events=await db.Events.Where(x=>x.TripId==id).OrderBy(x=>x.At).Take(10000).ToListAsync(),pods=await db.Pods.Where(x=>x.TripId==id).ToListAsync()});
+ return Results.Ok(new{trip=TripView(t,u,client),roadMatchingEnabled=RoadTrace.Configured(cfg),plan=await db.Plans.SingleOrDefaultAsync(x=>x.TripId==id),stages=await db.Stages.Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(),events=await db.Events.Where(x=>x.TripId==id).OrderBy(x=>x.At).Take(10000).ToListAsync(),pods=await db.Pods.Where(x=>x.TripId==id).ToListAsync()});
  });
  api.MapGet("/trips/{id:guid}/fixes",async(Guid id,HttpContext c,MozDb db,int? page)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await Visible(db,u).AnyAsync(x=>x.Id==id))return Results.NotFound();
  return Results.Ok(await db.Fixes.Where(x=>x.TripId==id&&x.Accepted).OrderBy(x=>x.At).Skip(Math.Clamp(page??0,0,100000)*1000).Take(1000).Select(x=>new{x.At,x.Lat,x.Lon,x.Accuracy,x.Speed,x.TrackingSince}).ToListAsync());
+ });
+ api.MapGet("/trips/{id:guid}/road-trace",async(Guid id,int? page,HttpContext c,MozDb db,RoadTrace matcher)=>{
+ var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(u.Role is not("operator" or "client"))return Results.Forbid();
+ var t=await Visible(db,u).AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id,c.RequestAborted);if(t==null)return Results.NotFound();
+ if(!RoadTrace.Configured(cfg))return Results.Ok(new{enabled=false,lines=Array.Empty<double[][]>(),hasMore=false});
+ var n=Math.Clamp(page??0,0,100000);var pts=await db.Fixes.AsNoTracking().Where(f=>f.TripId==id&&f.Accepted).OrderBy(f=>f.At).ThenBy(f=>f.Id).Skip(n*79).Take(81).ToListAsync(c.RequestAborted);
+ var lines=await matcher.Match(pts.Take(80).ToList(),t.GapSeconds,c.RequestAborted);
+ return Results.Ok(new{enabled=true,lines,hasMore=pts.Count>80});
  });
  api.MapGet("/trips/{id:guid}/audit",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(u.Role is not("operator" or "client"))return Results.Forbid();
@@ -153,8 +161,11 @@ public static class Api {
  var now=DateTimeOffset.UtcNow;var stops=detector.Complete(now);
  var terminal=Engine.Terminal(t)||t.Finished!=null;
  double? Duration(DateTimeOffset? a,DateTimeOffset? b)=>a.HasValue&&b.HasValue&&b.Value>=a.Value?(b.Value-a.Value).TotalSeconds:null;
- var stageTimes=stages.Select(s=>new{s.Id,s.Label,s.Kind,s.Arrived,s.Departed,s.WorkStart,s.WorkEnd,lastInside=detector.LastInside(s.Id),permanenceSeconds=Duration(s.Arrived,s.Departed??detector.LastInside(s.Id)),workSeconds=Duration(s.WorkStart,s.WorkEnd)}).ToList();
- return Results.Ok(new{stops,stageTimes,minimumStopSeconds=t.StopSeconds,lastEvidence=t.LastFix,elapsedSeconds=Duration(t.Started,t.Finished??now),terminal,movingSeconds=t.MovingSeconds,idleSeconds=t.IdleSeconds,yardPermanenceSeconds=stageTimes.Any(s=>s.permanenceSeconds!=null)?stageTimes.Sum(s=>s.permanenceSeconds):(double?)null,stopSeconds=stops.Sum(s=>s.DurationSeconds),routeStopSeconds=stops.Where(s=>s.StageId==null).Sum(s=>s.DurationSeconds),yardStopSeconds=stops.Where(s=>s.StageId!=null).Sum(s=>s.DurationSeconds)});
+ var pods=await db.Pods.AsNoTracking().Where(p=>p.TripId==id&&p.LocationVerified).OrderBy(p=>p.Captured).ToListAsync(c.RequestAborted);
+ var stageTimes=stages.Select(s=>{var end=TripTiming.StageEnd(s,detector.LastInside(s.Id),pods);return new{s.Id,s.Label,s.Kind,s.CargoRole,s.Arrived,s.Departed,s.WorkStart,s.WorkEnd,lastInside=detector.LastInside(s.Id),operationalEnd=end.At,endBasis=end.Basis,permanenceSeconds=Duration(s.Arrived,end.At),workSeconds=Duration(s.WorkStart,s.WorkEnd)};}).ToList();
+ var cargo=TripTiming.Measure(t,stages,pods,detector.LastInside);
+ var travelStops=cargo.TravelFrom.HasValue&&cargo.TravelUntil.HasValue?stops.Where(s=>s.StageId==null).Sum(s=>Math.Max(0,((s.LastEvidence<cargo.TravelUntil.Value?s.LastEvidence:cargo.TravelUntil.Value)-(s.Start>cargo.TravelFrom.Value?s.Start:cargo.TravelFrom.Value)).TotalSeconds)):(double?)null;
+ return Results.Ok(new{cargo,travelStops,stops,stageTimes,minimumStopSeconds=t.StopSeconds,lastEvidence=t.LastFix,elapsedSeconds=Duration(t.Started,t.Finished??now),terminal,movingSeconds=t.MovingSeconds,idleSeconds=t.IdleSeconds,yardPermanenceSeconds=stageTimes.Any(s=>s.permanenceSeconds!=null)?stageTimes.Sum(s=>s.permanenceSeconds):(double?)null,stopSeconds=stops.Sum(s=>s.DurationSeconds),routeStopSeconds=stops.Where(s=>s.StageId==null).Sum(s=>s.DurationSeconds),yardStopSeconds=stops.Where(s=>s.StageId!=null).Sum(s=>s.DurationSeconds)});
  });
  api.MapPost("/trips/{id:guid}/action",async(Guid id,ActionInput x,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);if(t==null)return Results.NotFound();
@@ -222,9 +233,11 @@ public static class Api {
  else if(s.Departed!=null&&(s.CargoRole!="destination"||verified)){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,s.Departed.Value>captured?s.Departed.Value:captured);}
  try{await db.SaveChangesAsync();}catch{File.Delete(path);throw;}try{await MozRealtime.Publish(hub,t);}catch{}return Results.Ok(new{status=t.Status,id=doc.Id});
  });
- api.MapGet("/pods/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
+ api.MapGet("/pods/{id:guid}",async(Guid id,HttpContext c,MozDb db,bool? preview)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var p=await db.Pods.SingleOrDefaultAsync(x=>x.Id==id);if(p==null||!await Visible(db,u).AnyAsync(x=>x.Id==p.TripId))return Results.NotFound();
- var path=Path.Combine(storage,p.Id.ToString("N"));return File.Exists(path)?Results.File(path,"application/octet-stream",p.FileName):Results.NotFound();
+ var path=Path.Combine(storage,p.Id.ToString("N"));if(!File.Exists(path))return Results.NotFound();
+ if(preview==true&&p.ContentType is "image/jpeg" or "image/png" or "image/webp"){c.Response.Headers["Content-Disposition"]="inline";return Results.File(path,p.ContentType,enableRangeProcessing:true);}
+ return Results.File(path,"application/octet-stream",p.FileName);
  });
  api.MapGet("/notices",async(HttpContext c,MozDb db,int? page)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=from e in db.Events join t in Visible(db,u) on e.TripId equals t.Id select new{e,t.Code,TripReference=t.Container};

@@ -19,5 +19,6 @@ w.MozMaps.fleet('fleetMap',[a]);lastMap.handlers.load();
 w.MozMaps.fleet('fleetMap',[a]);assert.equal(updates,0);
 w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2}]);assert.equal(instances,1);assert.equal(removed,0);assert.equal(fits,1);assert.equal(updates,1);assert.equal(lastMap.getSource('vehicles').data.features[0].geometry.coordinates[0],-50.2);
 w.MozMaps.clear();assert.equal(removed,1);
+const at='2026-11-26T12:00:00Z';const pts=[{lat:-27.8,lon:-50.3,at},{lat:-27.8,lon:-50.2998,at:'2026-11-26T12:00:05Z'},{lat:-27.8,lon:-50.29,at:'2026-11-26T12:00:10Z'}];assert.equal(w.MozMaps.observedLines(pts,120).length,1);assert.equal(w.MozMaps.observedLines(pts,120)[0].length,2);assert.equal(w.MozMaps.observedLines([pts[0],pts[2]],120).length,0);
 dom.window.close();
 console.log('Live update: stable row, focus, scroll, map and camera.');
