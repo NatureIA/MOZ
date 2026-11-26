@@ -22,15 +22,17 @@ public static class Engine {
  public static void AuditRoute(Trip t,TripPlan? plan,Fix f,MozDb db){if(plan==null||!f.Accepted||Terminal(t))return;double d=RouteDistance(f.Lat,f.Lon,plan.Coordinates);if(d>plan.ToleranceMetres+f.Accuracy){plan.OutsideCount++;plan.InsideCount=0;if(!plan.Outside&&plan.OutsideCount>=3){plan.Outside=true;db.Events.Add(Event(t,"Desvio de rota",$"Posição fora do corredor planejado: {d:F0} m","Inferido",f.At));}}else if(d<=plan.ToleranceMetres){plan.OutsideCount=0;plan.InsideCount++;if(plan.Outside&&plan.InsideCount>=3){plan.Outside=false;db.Events.Add(Event(t,"Retorno à rota","Posições novamente compatíveis com o corredor planejado","Inferido",f.At));}}}
  public static EventLog Event(Trip t,string kind,string message,string source,DateTimeOffset? at=null,Guid? actor=null,Stage? stage=null)=>new(){TripId=t.Id,StageId=stage?.Id,ActorId=actor,Kind=kind,Message=message,Source=source,At=at??DateTimeOffset.UtcNow,Lat=t.LastLat,Lon=t.LastLon};
  public static bool Terminal(Trip t)=>t.Status is "Finalizada" or "Cancelada";
+ public static bool TrackingActive(Trip t)=>t.TrackingSince!=null&&t.Finished==null&&!Terminal(t);
+ public static bool FixAuthorized(Trip t,DateTimeOffset? epoch,DateTimeOffset at)=>TrackingActive(t)&&epoch==t.TrackingSince&&at>=t.TrackingSince!.Value;
  public static void Advance(Trip t,Stage s,int count,MozDb db,DateTimeOffset at) {
  t.CurrentStage++;
- if(t.CurrentStage>=count){t.Status="Finalizada";t.Finished=at;db.Events.Add(Event(t,"Finalizada","Viagem finalizada","Sistema",at));}
+ if(t.CurrentStage>=count){t.Status="Finalizada";t.Finished=at;t.TrackingSince=null;db.Events.Add(Event(t,"Finalizada","Viagem finalizada","Sistema",at));}
  else {t.Status="Em trânsito";db.Events.Add(Event(t,"Em trânsito","Deslocamento para próxima etapa","Sistema",at));}
  }
  public static void Process(Trip t,Stage? stage,int count,Fix f,MozDb db) {
  if(!f.Accepted)return;
  double? observedSpeed=f.Speed; double speed=observedSpeed??0;
- if(t.LastFix is {} last && t.LastLat is {} la && t.LastLon is {} lo) {
+ if(t.LastFix is {} last && t.TrackingSince is {} since && last>=since && t.LastLat is {} la && t.LastLon is {} lo) {
  var elapsed=(f.At-last).TotalSeconds;var metres=Distance(la,lo,f.Lat,f.Lon);
  if(elapsed>0&&elapsed<=t.GapSeconds&&metres/elapsed<55){
  if(observedSpeed==null){speed=metres/elapsed*3.6;observedSpeed=speed;}
