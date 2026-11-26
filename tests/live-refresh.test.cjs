@@ -22,5 +22,14 @@ w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2}]);assert.equal(instances,1);ass
 w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2,stale:true}]);assert.ok(label.classList.contains('is-stale'));
 w.MozMaps.clear();assert.equal(removed,1);assert.equal(doc.querySelectorAll('.fleet-plate').length,0);
 const at='2026-11-26T12:00:00Z';const pts=[{lat:-27.8,lon:-50.3,at},{lat:-27.8,lon:-50.2998,at:'2026-11-26T12:00:05Z'},{lat:-27.8,lon:-50.29,at:'2026-11-26T12:00:10Z'}];assert.equal(w.MozMaps.observedLines(pts,120).length,1);assert.equal(w.MozMaps.observedLines(pts,120)[0].length,2);assert.equal(w.MozMaps.observedLines([pts[0],pts[2]],120).length,0);
+const macroStart=app.indexOf('function macroCards('),macroEnd=app.indexOf('async function macro(',macroStart);
+assert.ok(macroStart>=0&&macroEnd>macroStart);
+w.esc=v=>String(v??'');w.eval(app.slice(macroStart,macroEnd));
+const stats=doc.createElement('div');stats.innerHTML=w.macroCards({total:99,active:3,vehicles:[{stale:false},{stale:true}],withoutPosition:1});
+assert.deepEqual([...stats.querySelectorAll('dd')].map(e=>e.textContent),['2','1','1','1']);
+assert.ok(!stats.textContent.includes('Total de viagens'));
+assert.ok(!stats.textContent.includes('Finalizadas'));
+const trackingStart=app.indexOf('function trackingCards('),trackingEnd=app.indexOf('function changeHtml(',trackingStart);w.eval("let tripClient='';"+app.slice(trackingStart,trackingEnd));
+stats.innerHTML=w.trackingCards({scheduled:1,active:2,finalized:3,cancelled:4,total:10});assert.deepEqual([...stats.querySelectorAll('dd')].map(e=>e.textContent),['1','2','3','4']);assert.ok(!stats.textContent.includes('Total de viagens'));
 dom.window.close();
 console.log('Live update: stable row, focus, scroll, map and camera.');
