@@ -63,7 +63,7 @@ public static class Api {
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=Visible(db,u);var n=Math.Clamp(page??0,0,10000);
  return Results.Ok(new{total=await q.CountAsync(),items=await q.OrderByDescending(x=>x.Created).Skip(n*100).Take(100).ToListAsync()});
  });
- api.MapPost("/trips",async(TripInput x,HttpContext c,MozDb db)=>{
+ api.MapPost("/trips",async(TripInput x,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
  if(!await db.Clients.AnyAsync(z=>z.Id==x.ClientId&&z.TenantId==u!.TenantId))return Bad("Cliente inválido.");
  var cpf=Engine.Digits(x.DriverCpf);if(!Engine.ValidCpf(cpf)||x.Stages==null||x.Stages.Length is <1 or >50||x.SpeedLimit is <10 or >150||x.MaxAccuracy is <5 or >200||x.StopSeconds is <30 or >3600||x.GapSeconds is <30 or >3600)return Bad("CPF, etapas ou parâmetros inválidos.");
@@ -75,7 +75,7 @@ public static class Api {
  var stages=new List<Stage>();
  for(int i=0;i<x.Stages.Length;i++){var s=x.Stages[i];var p=await db.Places.SingleOrDefaultAsync(z=>z.Id==s.PlaceId&&z.TenantId==tenant.Id);if(p==null||!TextOk(s.Label)||s.SlaMinutes<0||s.FinishOnPod&&!s.RequirePod)return Bad("Etapa inválida.");
  stages.Add(new Stage{TripId=t.Id,Order=i,Label=s.Label,Kind=s.Kind??"",Address=p.Address,Lat=p.Lat,Lon=p.Lon,Radius=p.Radius,Polygon=p.Polygon,RequirePod=s.RequirePod,FinishOnPod=s.FinishOnPod,SlaMinutes=s.SlaMinutes});}
- db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, motorista pendente de verificação":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());return await Save(db);
+ db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, motorista pendente de verificação":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){try{await MozRealtime.Publish(hub,t);}catch{}}return result;
  });
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();

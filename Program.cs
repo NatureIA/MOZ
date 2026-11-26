@@ -30,7 +30,7 @@ b.Services.AddAuthorization();b.Services.AddSignalR();
 var keysPath=Path.GetFullPath(cfg["DataProtection:KeysPath"]??"../private/keys",b.Environment.ContentRootPath);
 b.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysPath)).SetApplicationName("MOZ");
 b.Services.AddRateLimiter(o=>{o.RejectionStatusCode=429;o.AddPolicy("auth",c=>RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new FixedWindowRateLimiterOptions{PermitLimit=12,Window=TimeSpan.FromMinutes(1),QueueLimit=0}));});
-b.Services.AddHostedService<MonitorWorker>();
+b.Services.AddHostedService<MonitorWorker>();b.Services.AddSingleton(new PushKeys(keysPath,cfg));b.Services.AddHostedService<PushWorker>();
 b.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o=>o.MultipartBodyLengthLimit=24*1024*1024);
 var app=b.Build();
 app.UseExceptionHandler(e=>e.Run(async c=>{c.Response.StatusCode=500;await c.Response.WriteAsJsonAsync(new{error="Falha interna. Consulte o administrador."});}));
@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.0",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.1",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
@@ -87,6 +87,13 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  [InsideCount] int NOT NULL,
  CONSTRAINT [FK_Plans_Trips_TripId] FOREIGN KEY([TripId]) REFERENCES [dbo].[Trips]([Id])
  );
+ """);
+ startup.Step="push-schema";await db.Database.ExecuteSqlRawAsync("""
+ IF OBJECT_ID(N'dbo.PushDevices',N'U') IS NULL BEGIN
+ CREATE TABLE [dbo].[PushDevices]([Id] uniqueidentifier NOT NULL PRIMARY KEY,[UserId] uniqueidentifier NOT NULL,[EndpointHash] nvarchar(64) NOT NULL,[Endpoint] nvarchar(max) NOT NULL,[P256dh] nvarchar(max) NOT NULL,[Auth] nvarchar(max) NOT NULL,[Cursor] datetimeoffset NOT NULL,[NextAttempt] datetimeoffset NOT NULL,[Failures] int NOT NULL,[Kinds] nvarchar(max) NULL,CONSTRAINT [FK_PushDevices_Users_UserId] FOREIGN KEY([UserId]) REFERENCES [dbo].[Users]([Id]));
+ CREATE UNIQUE INDEX [IX_PushDevices_EndpointHash] ON [dbo].[PushDevices]([EndpointHash]);
+ CREATE INDEX [IX_PushDevices_NextAttempt] ON [dbo].[PushDevices]([NextAttempt]);
+ END;
  """);
  startup.Step="check-global";if(!await db.Users.AnyAsync(x=>x.Role=="global")){
  startup.Step="seed-credentials";var email=cfg["SeedAdmin:Email"]?.Trim().ToLowerInvariant();var pass=cfg["SeedAdmin:Password"];
@@ -116,7 +123,7 @@ api.MapPost("/register-driver",async(DriverInput x,MozDb db,IPasswordHasher<User
 }).RequireRateLimiting("auth");
 api.MapPost("/logout",(HttpContext c)=>{c.Response.Cookies.Delete("moz_session",new CookieOptions{Path="/",Secure=true,SameSite=SameSiteMode.Strict});return Results.Ok();});
 var auth=api.MapGroup("").RequireAuthorization();
-auth.MapMozEndpoints(storage,cfg);
+auth.MapMozEndpoints(storage,cfg);auth.MapPushEndpoints();
 app.MapHub<MozHub>("/hubs/events").RequireAuthorization();
 app.Run();
 public record LoginInput(string Login,string Password);
