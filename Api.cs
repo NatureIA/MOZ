@@ -140,7 +140,20 @@ public static class Api {
  });
  api.MapGet("/trips/{id:guid}/fixes",async(Guid id,HttpContext c,MozDb db,int? page)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await Visible(db,u).AnyAsync(x=>x.Id==id))return Results.NotFound();
- return Results.Ok(await db.Fixes.Where(x=>x.TripId==id&&x.Accepted).OrderBy(x=>x.At).Skip(Math.Clamp(page??0,0,100000)*1000).Take(1000).Select(x=>new{x.At,x.Lat,x.Lon,x.Accuracy,x.Speed}).ToListAsync());
+ return Results.Ok(await db.Fixes.Where(x=>x.TripId==id&&x.Accepted).OrderBy(x=>x.At).Skip(Math.Clamp(page??0,0,100000)*1000).Take(1000).Select(x=>new{x.At,x.Lat,x.Lon,x.Accuracy,x.Speed,x.TrackingSince}).ToListAsync());
+ });
+ api.MapGet("/trips/{id:guid}/audit",async(Guid id,HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(u.Role is not("operator" or "client"))return Results.Forbid();
+ var t=await Visible(db,u).AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id,c.RequestAborted);if(t==null)return Results.NotFound();
+ var stages=await db.Stages.AsNoTracking().Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(c.RequestAborted);
+ // Bound the evidence snapshot to the trip version read above, and stream the full accepted history.
+ var detector=new GpsStopAudit(t,stages);
+ if(t.LastFix is {} last)await foreach(var f in db.Fixes.AsNoTracking().Where(x=>x.TripId==id&&x.Accepted&&x.At<=last).OrderBy(x=>x.At).ThenBy(x=>x.Id).AsAsyncEnumerable().WithCancellation(c.RequestAborted))detector.Add(f);
+ var now=DateTimeOffset.UtcNow;var stops=detector.Complete(now);
+ var terminal=Engine.Terminal(t)||t.Finished!=null;
+ double? Duration(DateTimeOffset? a,DateTimeOffset? b)=>a.HasValue&&b.HasValue&&b.Value>=a.Value?(b.Value-a.Value).TotalSeconds:null;
+ var stageTimes=stages.Select(s=>new{s.Id,s.Label,s.Kind,s.Arrived,s.Departed,s.WorkStart,s.WorkEnd,lastInside=detector.LastInside(s.Id),permanenceSeconds=Duration(s.Arrived,s.Departed??detector.LastInside(s.Id)),workSeconds=Duration(s.WorkStart,s.WorkEnd)}).ToList();
+ return Results.Ok(new{stops,stageTimes,minimumStopSeconds=t.StopSeconds,lastEvidence=t.LastFix,elapsedSeconds=Duration(t.Started,t.Finished??now),terminal,movingSeconds=t.MovingSeconds,idleSeconds=t.IdleSeconds,yardPermanenceSeconds=stageTimes.Any(s=>s.permanenceSeconds!=null)?stageTimes.Sum(s=>s.permanenceSeconds):(double?)null,stopSeconds=stops.Sum(s=>s.DurationSeconds),routeStopSeconds=stops.Where(s=>s.StageId==null).Sum(s=>s.DurationSeconds),yardStopSeconds=stops.Where(s=>s.StageId!=null).Sum(s=>s.DurationSeconds)});
  });
  api.MapPost("/trips/{id:guid}/action",async(Guid id,ActionInput x,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);if(t==null)return Results.NotFound();
@@ -182,7 +195,7 @@ public static class Api {
  if(processed.Contains(x.Id)||saved.Contains(x.Id)){processed.Add(x.Id);continue;}
  if(!Engine.FixAuthorized(t,x.TrackingSince,x.At)||x.Id==Guid.Empty||!Engine.ValidPoint(x.Lat,x.Lon)||!double.IsFinite(x.Accuracy)||x.Accuracy<0||x.Speed is <0 or >250||x.At>DateTimeOffset.UtcNow.AddMinutes(2)){discarded.Add(x.Id);continue;}
  var valid=!Engine.Terminal(t)&&x.Accuracy<=t.MaxAccuracy&&(t.LastFix==null||x.At>t.LastFix);
- var f=new Fix{Id=x.Id,TripId=id,At=x.At,Lat=x.Lat,Lon=x.Lon,Accuracy=x.Accuracy,Speed=x.Speed,Accepted=valid};db.Fixes.Add(f);
+ var f=new Fix{Id=x.Id,TripId=id,At=x.At,TrackingSince=x.TrackingSince,Lat=x.Lat,Lon=x.Lon,Accuracy=x.Accuracy,Speed=x.Speed,Accepted=valid};db.Fixes.Add(f);
  var old=t.CurrentStage;Engine.Process(t,stage,count,f,db);Engine.AuditRoute(t,plan,f,db);if(t.CurrentStage!=old)stage=await CurrentStage(db,t);processed.Add(x.Id);
  }
  try{await db.SaveChangesAsync();return Results.Ok(new{acceptedIds=processed,discardIds=discarded,status=t.Status,trackingActive=Engine.TrackingActive(t)});}catch(DbUpdateException){return Results.Conflict(new{error="Lote concorrente; tente novamente."});}
