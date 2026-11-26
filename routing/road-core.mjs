@@ -8,16 +8,16 @@ export function usablePair(a,b,gap){if(!valid(a)||!valid(b)||a.trackingSince!==b
 const key=(p,level)=>Math.round(p[0]*1e5)+','+Math.round(p[1]*1e5)+':'+level;
 const allowed=new Set(['motorway','trunk','primary','secondary','tertiary','minor','service','track','residential','unclassified','road','living_street','motorway_link','trunk_link','primary_link','secondary_link','tertiary_link']);
 export function graph(roads){
- const nodes=new Map(),edges=[],seen=new Set();
+ const nodes=new Map(),edges=[],seen=new Set(),index=new Map(),cell=.002;
  const node=(p,level)=>{const k=key(p,level);if(!nodes.has(k))nodes.set(k,{p,adj:[]});return k};
  for(const road of roads){if(!allowed.has(road.class))continue;const level=String(road.layer??0)+':'+String(road.brunnel??'');
  for(const line of road.lines||[])for(let i=1;i<line.length;i++){const a=line[i-1],b=line[i];if(!Array.isArray(a)||!Array.isArray(b)||!a.every(Number.isFinite)||!b.every(Number.isFinite))continue;const len=distance(a,b);if(len<.3)continue;
- const u=node(a,level),v=node(b,level);if(u===v)continue;const id=[u,v].sort().join('|');if(seen.has(id))continue;seen.add(id);const edge={a,b,u,v,len};edges.push(edge);nodes.get(u).adj.push({to:v,len});nodes.get(v).adj.push({to:u,len});
+ const u=node(a,level),v=node(b,level);if(u===v)continue;const id=[u,v].sort().join('|');if(seen.has(id))continue;seen.add(id);const edge={a,b,u,v,len};edges.push(edge);const minX=Math.floor(Math.min(a[0],b[0])/cell),maxX=Math.floor(Math.max(a[0],b[0])/cell),minY=Math.floor(Math.min(a[1],b[1])/cell),maxY=Math.floor(Math.max(a[1],b[1])/cell);for(let x=minX;x<=maxX;x++)for(let y=minY;y<=maxY;y++){const k=x+','+y;if(!index.has(k))index.set(k,[]);index.get(k).push(edge)}nodes.get(u).adj.push({to:v,len});nodes.get(v).adj.push({to:u,len});
  }}
- return {nodes,edges};
+ return {nodes,edges,index,cell};
 }
 function project(p,e){const cos=Math.cos(p[1]*rad),x=(e.a[0]-p[0])*cos,y=e.a[1]-p[1],dx=(e.b[0]-e.a[0])*cos,dy=e.b[1]-e.a[1],den=dx*dx+dy*dy;const t=Math.max(0,Math.min(1,den?-(x*dx+y*dy)/den:0)),q=[e.a[0]+(e.b[0]-e.a[0])*t,e.a[1]+(e.b[1]-e.a[1])*t];return {e,t,q,d:distance(p,q)}}
-function candidates(g,p,accuracy){const limit=Math.min(65,Math.max(20,Number(accuracy)||20)*1.5+8),best=[];for(const e of g.edges){const c=project(p,e);if(c.d>limit)continue;best.push(c);best.sort((a,b)=>a.d-b.d);if(best.length>3)best.pop()}return best}
+function candidates(g,p,accuracy){const limit=Math.min(65,Math.max(20,Number(accuracy)||20)*1.5+8),best=[],near=new Set(),dx=limit/(111000*Math.max(.08,Math.cos(p[1]*rad))),dy=limit/111000;for(let x=Math.floor((p[0]-dx)/g.cell);x<=Math.floor((p[0]+dx)/g.cell);x++)for(let y=Math.floor((p[1]-dy)/g.cell);y<=Math.floor((p[1]+dy)/g.cell);y++)for(const e of g.index.get(x+','+y)||[])near.add(e);for(const e of near){const c=project(p,e);if(c.d>limit)continue;best.push(c);best.sort((a,b)=>a.d-b.d);if(best.length>3)best.pop()}return best}
 function search(g,start,end,max){
  const dist=new Map([[start,0]]),prev=new Map(),heap=[[0,start]];
  const push=x=>{let i=heap.length;heap.push(x);while(i){let p=(i-1)>>1;if(heap[p][0]<=x[0])break;heap[i]=heap[p];i=p}heap[i]=x};
@@ -26,12 +26,12 @@ function search(g,start,end,max){
 }
 export function matchPair(g,a,b){
  const p=point(a),q=point(b),direct=distance(p,q),dt=(Date.parse(b.at)-Date.parse(a.at))/1000,max=Math.min(direct*2.2+45,dt*55+20);if(!Number.isFinite(max)||max<=0)return null;
- const A=candidates(g,p,a.accuracy),B=candidates(g,q,b.accuracy);let best=null,score=Infinity;
+ const A=candidates(g,p,a.accuracy),B=candidates(g,q,b.accuracy);let best=null,score=Infinity;const searches=new Map();
  const accept=(path,len,x,y)=>{if(len>max||len<direct*.45)return;const s=(x.d+y.d)*3+Math.abs(len-direct)*.7;if(s<score){score=s;best=path}};
  for(const x of A)for(const y of B){
  if(x.e===y.e){accept([x.q,y.q],Math.abs(x.t-y.t)*x.e.len,x,y);continue}
  const starts=[[x.e.u,x.t*x.e.len],[x.e.v,(1-x.t)*x.e.len]],ends=[[y.e.u,y.t*y.e.len],[y.e.v,(1-y.t)*y.e.len]];
- for(const [u,du] of starts)for(const [v,dv] of ends){if(du+dv>max)continue;const r=search(g,u,v,max-du-dv);if(r)accept([x.q,...r.path,y.q],du+r.len+dv,x,y)}
+ for(const [u,du] of starts)for(const [v,dv] of ends){if(du+dv>max)continue;const k=u+'|'+v;if(!searches.has(k))searches.set(k,search(g,u,v,max));const r=searches.get(k);if(r&&r.len+du+dv<=max)accept([x.q,...r.path,y.q],du+r.len+dv,x,y)}
  }
  return best&&best.filter((p,i)=>i===0||distance(p,best[i-1])>.1).length>=2?best:null;
 }
