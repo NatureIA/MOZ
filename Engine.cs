@@ -66,12 +66,13 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  readonly Dictionary<Guid,DateTimeOffset> lastInside=new();
  public DateTimeOffset? LastInside(Guid stageId)=>lastInside.TryGetValue(stageId,out var at)?at:null;
  bool completed;
- DateTimeOffset? StageEnd(Stage s)=>s.Departed??stages.Where(z=>z.Order>s.Order&&z.Arrived!=null).OrderBy(z=>z.Order).Select(z=>z.Arrived).FirstOrDefault();
+ readonly Dictionary<Guid,DateTimeOffset?> stageEnds=stages.ToDictionary(s=>s.Id,s=>s.Departed??stages.Where(z=>z.Order>s.Order&&z.Arrived!=null).OrderBy(z=>z.Order).Select(z=>z.Arrived).FirstOrDefault());
+ bool BeforeStageEnd(Stage s,DateTimeOffset at)=>!stageEnds[s.Id].HasValue||at<=stageEnds[s.Id]!.Value;
  void Close(string state,DateTimeOffset? resumedAt=null){
  if(first!=null&&stationary!=null){
  var duration=(stationary.At-first.At).TotalSeconds;
  if(duration>=trip.StopSeconds){
- var stage=stages.OrderByDescending(s=>s.Order).FirstOrDefault(s=>s.Arrived is {} arrived&&arrived<=stationary.At&&(StageEnd(s) is not {} end||end>=first.At)&&Engine.Contains(first.Lat,first.Lon,s.Lat,s.Lon,s.Radius,s.Polygon));
+ var stage=stages.OrderByDescending(s=>s.Order).FirstOrDefault(s=>s.Arrived is {} arrived&&arrived<=stationary.At&&BeforeStageEnd(s,first.At)&&Engine.Contains(first.Lat,first.Lon,s.Lat,s.Lon,s.Radius,s.Polygon));
  stops.Add(new GpsStop(first.At,stationary.At,duration,first.Lat,first.Lon,first.Accuracy,stage?.Id,stage?.Label,state,resumedAt));
  }}
  first=null;stationary=null;
@@ -79,7 +80,7 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  public void Add(Fix f){
  if(completed)throw new InvalidOperationException("Audit already completed");
  if(!f.Accepted||!Engine.ValidPoint(f.Lat,f.Lon))return;
- foreach(var s in stages){if(s.Arrived is {} arrived&&f.At>=arrived&&(StageEnd(s) is not {} end||f.At<=end)&&Engine.Contains(f.Lat,f.Lon,s.Lat,s.Lon,s.Radius,s.Polygon))lastInside[s.Id]=f.At;}
+ foreach(var s in stages){if(s.Arrived is {} arrived&&f.At>=arrived&&BeforeStageEnd(s,f.At)&&Engine.Contains(f.Lat,f.Lon,s.Lat,s.Lon,s.Radius,s.Polygon))lastInside[s.Id]=f.At;}
  if(previous!=null){
  if(f.At<=previous.At)return;
  if(f.TrackingSince!=previous.TrackingSince||(f.At-previous.At).TotalSeconds>trip.GapSeconds){Close(f.TrackingSince!=previous.TrackingSince?"Autorização interrompida":"Lacuna GPS");previous=null;previousSpeed=null;}
