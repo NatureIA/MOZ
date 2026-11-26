@@ -58,7 +58,7 @@ public static class Engine {
 
 
 // Stop audit is reconstructed from accepted GPS evidence, not from unpaired alert events.
-public sealed record GpsStop(DateTimeOffset Start,DateTimeOffset LastEvidence,double DurationSeconds,double Lat,double Lon,double Accuracy,Guid? StageId,string? StageLabel,string State);
+public sealed record GpsStop(DateTimeOffset Start,DateTimeOffset LastEvidence,double DurationSeconds,double Lat,double Lon,double Accuracy,Guid? StageId,string? StageLabel,string State,DateTimeOffset? ResumedAt);
 public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  readonly List<GpsStop> stops=new();
  Fix? previous,first,stationary;
@@ -66,19 +66,20 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  readonly Dictionary<Guid,DateTimeOffset> lastInside=new();
  public DateTimeOffset? LastInside(Guid stageId)=>lastInside.TryGetValue(stageId,out var at)?at:null;
  bool completed;
- void Close(string state){
+ DateTimeOffset? StageEnd(Stage s)=>s.Departed??stages.Where(z=>z.Order>s.Order&&z.Arrived!=null).OrderBy(z=>z.Order).Select(z=>z.Arrived).FirstOrDefault();
+ void Close(string state,DateTimeOffset? resumedAt=null){
  if(first!=null&&stationary!=null){
  var duration=(stationary.At-first.At).TotalSeconds;
  if(duration>=trip.StopSeconds){
- var stage=stages.FirstOrDefault(s=>s.Arrived is {} arrived&&arrived<=stationary.At&&(s.Departed==null||s.Departed>=first.At)&&Engine.Contains(first.Lat,first.Lon,s.Lat,s.Lon,s.Radius,s.Polygon));
- stops.Add(new GpsStop(first.At,stationary.At,duration,first.Lat,first.Lon,first.Accuracy,stage?.Id,stage?.Label,state));
+ var stage=stages.OrderByDescending(s=>s.Order).FirstOrDefault(s=>s.Arrived is {} arrived&&arrived<=stationary.At&&(StageEnd(s) is not {} end||end>=first.At)&&Engine.Contains(first.Lat,first.Lon,s.Lat,s.Lon,s.Radius,s.Polygon));
+ stops.Add(new GpsStop(first.At,stationary.At,duration,first.Lat,first.Lon,first.Accuracy,stage?.Id,stage?.Label,state,resumedAt));
  }}
  first=null;stationary=null;
  }
  public void Add(Fix f){
  if(completed)throw new InvalidOperationException("Audit already completed");
  if(!f.Accepted||!Engine.ValidPoint(f.Lat,f.Lon))return;
- foreach(var s in stages){if(s.Arrived is {} arrived&&f.At>=arrived&&(s.Departed==null||f.At<=s.Departed)&&Engine.Contains(f.Lat,f.Lon,s.Lat,s.Lon,s.Radius,s.Polygon))lastInside[s.Id]=f.At;}
+ foreach(var s in stages){if(s.Arrived is {} arrived&&f.At>=arrived&&(StageEnd(s) is not {} end||f.At<=end)&&Engine.Contains(f.Lat,f.Lon,s.Lat,s.Lon,s.Radius,s.Polygon))lastInside[s.Id]=f.At;}
  if(previous!=null){
  if(f.At<=previous.At)return;
  if(f.TrackingSince!=previous.TrackingSince||(f.At-previous.At).TotalSeconds>trip.GapSeconds){Close(f.TrackingSince!=previous.TrackingSince?"Autorização interrompida":"Lacuna GPS");previous=null;previousSpeed=null;}
@@ -90,10 +91,10 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  speed=metres<=Math.Max(5,Math.Max(f.Accuracy,previous.Accuracy)/2)?0:metres/delta*3.6;
  }
  if(speed is <=3){
- if(first!=null&&Engine.Distance(first.Lat,first.Lon,f.Lat,f.Lon)>Math.Max(30,Math.Max(first.Accuracy,f.Accuracy)*2))Close("Deslocamento detectado");
+ if(first!=null&&Engine.Distance(first.Lat,first.Lon,f.Lat,f.Lon)>Math.Max(30,Math.Max(first.Accuracy,f.Accuracy)*2))Close("Deslocamento detectado",f.At);
  first??=(previous!=null&&f.Speed==null&&(previousSpeed is null or <=3)?previous:f);
  stationary=f;
- }else if(speed!=null)Close("Retomada do movimento");
+ }else if(speed!=null)Close("Retomada do movimento",f.At);
  previous=f;previousSpeed=speed;
  }
  public IReadOnlyList<GpsStop> Complete(DateTimeOffset now){
