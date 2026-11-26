@@ -2,6 +2,10 @@ using System.Text.Json;
 namespace Moz;
 public static class Engine {
  public static string Digits(string? x)=>new string((x??"").Where(c=>c>='0'&&c<='9').ToArray());
+ public static string? NormalizeTripReference(string? value){
+ var reference=value?.Trim();return string.IsNullOrEmpty(reference)||reference.Length>160||reference.Any(char.IsControl)?null:reference;
+ }
+ public static bool SameTripReference(string? existing,string reference)=>!string.IsNullOrWhiteSpace(existing)&&string.Equals(existing.Trim(),reference.Trim(),StringComparison.OrdinalIgnoreCase);
  public static bool ValidCpf(string x) {
  if(x.Length!=11||x.Distinct().Count()==1) return false;
  for(int n=9;n<=10;n++){int s=0;for(int i=0;i<n;i++)s+=(x[i]-'0')*(n+1-i);int d=11-s%11;if(d>=10)d=0;if(x[n]-'0'!=d)return false;}return true;
