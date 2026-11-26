@@ -36,4 +36,25 @@ Check(!Engine.FixAuthorized(privacyTrip,epoch,epoch.AddSeconds(-1)),"preactivati
 privacyTrip.TrackingSince=null;Check(!Engine.FixAuthorized(privacyTrip,epoch,epoch.AddSeconds(1)),"paused GPS rejected");
 privacyTrip.TrackingSince=epoch.AddMinutes(1);Check(!Engine.FixAuthorized(privacyTrip,epoch,epoch.AddMinutes(1)),"old epoch rejected on resume");
 privacyTrip.Finished=epoch.AddMinutes(2);Check(!Engine.TrackingActive(privacyTrip),"completed tracking off");
+var stopTrip=new Trip{Started=epoch,TrackingSince=epoch,StopSeconds=180,GapSeconds=120};
+Fix Position(int seconds,double speed=0,DateTimeOffset? authorization=null,double lat=-27.81)=>new(){Accepted=true,At=epoch.AddSeconds(seconds),Lat=lat,Lon=-50.32,Accuracy=5,Speed=speed,TrackingSince=authorization??epoch};
+var audit=new GpsStopAudit(stopTrip,Array.Empty<Stage>());
+for(int sec=0;sec<=5400;sec+=60)audit.Add(Position(sec));
+audit.Add(Position(5460,60,lat:-27.80));
+var stops=audit.Complete(epoch.AddSeconds(5460));
+Check(stops.Count==1&&stops[0].DurationSeconds==5400&&stops[0].State=="Retomada do movimento","90 minute route stop, location and end");
+var yard=new Stage{Label="Carga",Arrived=epoch,Departed=epoch.AddMinutes(10),Lat=-27.81,Lon=-50.32,Radius=100};
+var yardAudit=new GpsStopAudit(stopTrip,new[]{yard});
+for(int sec=0;sec<=300;sec+=60)yardAudit.Add(Position(sec));
+yardAudit.Add(Position(600)); // Missing evidence must not be counted as a continuous stop.
+for(int sec=660;sec<=900;sec+=60)yardAudit.Add(Position(sec));
+var yardStops=yardAudit.Complete(epoch.AddSeconds(900));
+Check(yardStops.Count==2&&yardStops[0].DurationSeconds==300&&yardStops[0].StageId==yard.Id&&yardStops[0].State=="Lacuna GPS","yard stop and gap split");
+Check(yardStops[1].DurationSeconds==300&&yardStops[1].State=="Em andamento","ongoing stop based on evidence");
+var pauseAudit=new GpsStopAudit(stopTrip,Array.Empty<Stage>());
+for(int sec=0;sec<=180;sec+=60)pauseAudit.Add(Position(sec));
+pauseAudit.Add(Position(190,authorization:epoch.AddSeconds(185)));
+for(int sec=250;sec<=430;sec+=60)pauseAudit.Add(Position(sec,authorization:epoch.AddSeconds(185)));
+var pauseStops=pauseAudit.Complete(epoch.AddSeconds(430));
+Check(pauseStops.Count==2&&pauseStops[0].DurationSeconds==180&&pauseStops[0].State=="Autorização interrompida","activation boundaries prevent false stop duration");
 Console.WriteLine("Geometry and input rules passed.");
