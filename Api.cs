@@ -152,7 +152,7 @@ public static class Api {
  var now=DateTimeOffset.UtcNow;var stops=detector.Complete(now);
  var terminal=Engine.Terminal(t)||t.Finished!=null;
  double? Duration(DateTimeOffset? a,DateTimeOffset? b)=>a.HasValue&&b.HasValue&&b.Value>=a.Value?(b.Value-a.Value).TotalSeconds:null;
- var stageTimes=stages.Select(s=>new{s.Id,s.Label,s.Kind,s.Arrived,s.Departed,s.WorkStart,s.WorkEnd,permanenceSeconds=Duration(s.Arrived,s.Departed),workSeconds=Duration(s.WorkStart,s.WorkEnd)});
+ var stageTimes=stages.Select(s=>new{s.Id,s.Label,s.Kind,s.Arrived,s.Departed,s.WorkStart,s.WorkEnd,lastInside=detector.LastInside(s.Id),permanenceSeconds=Duration(s.Arrived,s.Departed??detector.LastInside(s.Id)),workSeconds=Duration(s.WorkStart,s.WorkEnd)});
  return Results.Ok(new{stops,stageTimes,minimumStopSeconds=t.StopSeconds,lastEvidence=t.LastFix,elapsedSeconds=Duration(t.Started,t.Finished??now),terminal,movingSeconds=t.MovingSeconds,idleSeconds=t.IdleSeconds,stopSeconds=stops.Sum(s=>s.DurationSeconds),routeStopSeconds=stops.Where(s=>s.StageId==null).Sum(s=>s.DurationSeconds),yardStopSeconds=stops.Where(s=>s.StageId!=null).Sum(s=>s.DurationSeconds)});
  });
  api.MapPost("/trips/{id:guid}/action",async(Guid id,ActionInput x,HttpContext c,MozDb db)=>{
