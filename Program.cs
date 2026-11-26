@@ -54,7 +54,7 @@ app.Use(async(c,next)=>{
  var t=await db.Trips.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==tid);
  if(t!=null)await MozRealtime.Publish(hub,t);
  }else if(segments.Length==2&&Guid.TryParse(c.User.FindFirstValue("sub"),out var uid)){
- var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==uid&&x.Active);
+ var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==uid&&x.Active&&(x.Role=="global"||x.Role=="operator"||x.Role=="client"||x.Role=="driver"));
  if(u?.TenantId is {} tenant)await hub.Clients.Group("operator:"+tenant).SendAsync("changed");
  }
  }catch(Exception ex){app.Logger.LogWarning("Live update dispatch failed: {Type}",ex.GetType().Name);}
@@ -109,7 +109,7 @@ var api=app.MapGroup("/api");
 api.MapPost("/login",async(LoginInput input,MozDb db,IPasswordHasher<User> hasher,HttpContext c)=>{
  var login=input.Login.Trim().ToLowerInvariant();if(Engine.Digits(login).Length==11&&!login.Contains('@'))login=Engine.Digits(login);
  var u=await db.Users.SingleOrDefaultAsync(x=>x.Login==login&&x.Active);
- if(u==null||hasher.VerifyHashedPassword(u,u.PasswordHash,input.Password)==PasswordVerificationResult.Failed)return Results.Unauthorized();
+ if(u==null||u.Role is not ("global" or "operator" or "client" or "driver")||hasher.VerifyHashedPassword(u,u.PasswordHash,input.Password)==PasswordVerificationResult.Failed)return Results.Unauthorized();
  if(u.TenantId is {} tid&&!await db.Tenants.AnyAsync(x=>x.Id==tid&&x.Active))return Results.Unauthorized();
  var token=new JwtSecurityToken(issuer,audience,new[]{new Claim("sub",u.Id.ToString()),new Claim("role",u.Role)},expires:DateTime.UtcNow.AddHours(12),signingCredentials:new(signing,SecurityAlgorithms.HmacSha256));
  c.Response.Cookies.Append("moz_session",new JwtSecurityTokenHandler().WriteToken(token),new CookieOptions{HttpOnly=true,Secure=true,SameSite=SameSiteMode.Strict,MaxAge=TimeSpan.FromHours(12),Path="/"});
@@ -132,8 +132,8 @@ public class MozHub(MozDb db):Hub {
  public override async Task OnConnectedAsync(){
  if(!Guid.TryParse(Context.User?.FindFirstValue("sub"),out var id)){Context.Abort();return;}
  var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id&&x.Active);
- if(u==null||(u.TenantId is {} tid&&!await db.Tenants.AnyAsync(t=>t.Id==tid&&t.Active))){Context.Abort();return;}
- if((u.Role is "operator" or "observer")&&u.TenantId is {} tenant)await Groups.AddToGroupAsync(Context.ConnectionId,"operator:"+tenant);
+ if(u==null||u.Role is not ("global" or "operator" or "client" or "driver")||(u.TenantId is {} tid&&!await db.Tenants.AnyAsync(t=>t.Id==tid&&t.Active))){Context.Abort();return;}
+ if(u.Role=="operator"&&u.TenantId is {} tenant)await Groups.AddToGroupAsync(Context.ConnectionId,"operator:"+tenant);
  else if(u.Role=="client"&&u.ClientId is {} client&&u.TenantId is {} ct)await Groups.AddToGroupAsync(Context.ConnectionId,"client:"+ct+":"+client);
  else if(u.Role=="driver"&&u.IdentityVerified)await Groups.AddToGroupAsync(Context.ConnectionId,"driver:"+u.Id);
  await base.OnConnectedAsync();
