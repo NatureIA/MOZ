@@ -40,7 +40,7 @@ jobs:
       - name: Install map library
         shell: pwsh
         run: |
-          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7
+          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7 jsdom@26.1.0
           New-Item -ItemType Directory -Force wwwroot/vendor | Out-Null
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.js wwwroot/vendor/
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.css wwwroot/vendor/
@@ -51,6 +51,7 @@ jobs:
           node --check wwwroot/app.js
           node --check wwwroot/maps.js
           node --check wwwroot/service-worker.js
+          node tests/live-refresh.test.cjs
           node -e "JSON.parse(require('fs').readFileSync('wwwroot/manifest.webmanifest','utf8'))"
       - name: Restore
         run: dotnet restore MOZ.csproj
