@@ -42,7 +42,7 @@ var audit=new GpsStopAudit(stopTrip,Array.Empty<Stage>());
 for(int sec=0;sec<=5400;sec+=60)audit.Add(Position(sec));
 audit.Add(Position(5460,60,lat:-27.80));
 var stops=audit.Complete(epoch.AddSeconds(5460));
-Check(stops.Count==1&&stops[0].DurationSeconds==5400&&stops[0].State=="Retomada do movimento","90 minute route stop, location and end");
+Check(stops.Count==1&&stops[0].DurationSeconds==5400&&stops[0].State=="Retomada do movimento"&&stops[0].ResumedAt==epoch.AddSeconds(5460),"90 minute route stop, location and end");
 var yard=new Stage{Label="Carga",Arrived=epoch,Departed=epoch.AddMinutes(10),Lat=-27.81,Lon=-50.32,Radius=100};
 var yardAudit=new GpsStopAudit(stopTrip,new[]{yard});
 for(int sec=0;sec<=300;sec+=60)yardAudit.Add(Position(sec));
