@@ -70,10 +70,11 @@ async function syncTracking(){if(!me||me.role!=='driver'||!me.identityVerified){
  const epoch=a.trackingSince,deadline=requestedAt+Math.min(15,Number(a.leaseSeconds)||0)*1000;
  if(performance.now()>=deadline){if(tracking)stopGps();return;}
  if(tracking!==a.tripId||trackingEpoch!==epoch){stopGps();if(permissionDeniedEpoch===epoch)return;startGps(a.tripId,epoch,deadline);}
+ if(window.MozNative&&tracking===a.tripId&&!document.hidden&&typeof window.MozNative.canStartAuthorizedTracking==='function'&&window.MozNative.canStartAuthorizedTracking(epoch)){window.MozNative.startAuthorizedTracking(a.tripId,owner,epoch);}
  leaseUntil=deadline;clearTimeout(leaseTimer);leaseTimer=setTimeout(()=>{if(tracking&&!window.MozNative&&performance.now()>=leaseUntil)stopGps();},Math.max(0,deadline-performance.now())+10);
  }catch{if(!window.MozNative&&tracking)stopGps();}finally{trackingCheck=false;}}
 function startGps(id,epoch,deadline){if(!me||me.role!=='driver')return;tracking=id;trackingEpoch=epoch;leaseUntil=deadline;const owner=me.id;
- if(window.MozNative){if(document.hidden){tracking=null;trackingEpoch=null;return;}try{window.MozNative.startTracking(id,owner);}catch{stopGps();}return;}
+ if(window.MozNative){if(document.hidden){tracking=null;trackingEpoch=null;return;}try{if(typeof window.MozNative.startAuthorizedTracking!=='function'){permissionDeniedEpoch=epoch;stopGps();toast('Atualize o aplicativo MOZ Driver para utilizar a autorização de GPS.');return;}window.MozNative.startAuthorizedTracking(id,owner,epoch);}catch{stopGps();}return;}
  if(!navigator.geolocation){stopGps();return;}
  let last=0;watch=navigator.geolocation.watchPosition(async p=>{if(!me||me.id!==owner||tracking!==id||trackingEpoch!==epoch)return;if(performance.now()>=leaseUntil||!navigator.onLine){stopGps();return;}if(p.timestamp<new Date(epoch).getTime()||p.timestamp-last<5000)return;last=p.timestamp;
  const fix={id:crypto.randomUUID(),at:new Date(p.timestamp).toISOString(),lat:p.coords.latitude,lon:p.coords.longitude,accuracy:p.coords.accuracy,speed:p.coords.speed===null?null:p.coords.speed*3.6,trackingSince:epoch};try{await queue({id:fix.id,user:owner,trip:id,type:'fix',fix});const g=$('#gpsStatus');if(g)g.textContent='GPS autorizado · precisão '+Math.round(fix.accuracy)+' m';await flush()}catch(e){toast('Não foi possível salvar posição local. '+e.message)}},e=>{if(e.code===1)permissionDeniedEpoch=epoch;stopGps();const g=$('#gpsStatus');if(g)g.textContent='GPS indisponível: confira as permissões do dispositivo.';},{enableHighAccuracy:true,maximumAge:0,timeout:20000});
