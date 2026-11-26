@@ -55,3 +55,46 @@ public static class Engine {
  else{stage.OutsideCount=0;stage.FirstOutside=null;}
  }
 }
+
+
+// Stop audit is reconstructed from accepted GPS evidence, not from unpaired alert events.
+public sealed record GpsStop(DateTimeOffset Start,DateTimeOffset LastEvidence,double DurationSeconds,double Lat,double Lon,double Accuracy,Guid? StageId,string? StageLabel,string State);
+public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
+ readonly List<GpsStop> stops=new();
+ Fix? previous,first,stationary;
+ bool completed;
+ void Close(string state){
+ if(first!=null&&stationary!=null){
+ var duration=(stationary.At-first.At).TotalSeconds;
+ if(duration>=trip.StopSeconds){
+ var stage=stages.FirstOrDefault(s=>s.Arrived is {} arrived&&arrived<=stationary.At&&(s.Departed==null||s.Departed>=first.At)&&Engine.Contains(first.Lat,first.Lon,s.Lat,s.Lon,s.Radius,s.Polygon));
+ stops.Add(new GpsStop(first.At,stationary.At,duration,first.Lat,first.Lon,first.Accuracy,stage?.Id,stage?.Label,state));
+ }}
+ first=null;stationary=null;
+ }
+ public void Add(Fix f){
+ if(completed)throw new InvalidOperationException("Audit already completed");
+ if(!f.Accepted||!Engine.ValidPoint(f.Lat,f.Lon))return;
+ if(previous!=null){
+ if(f.At<=previous.At)return;
+ if(f.TrackingSince!=previous.TrackingSince||(f.At-previous.At).TotalSeconds>trip.GapSeconds){Close(f.TrackingSince!=previous.TrackingSince?"Autorização interrompida":"Lacuna GPS");previous=null;}
+ }
+ double? speed=f.Speed;
+ if(speed==null&&previous!=null){
+ var delta=(f.At-previous.At).TotalSeconds;
+ var metres=Engine.Distance(previous.Lat,previous.Lon,f.Lat,f.Lon);
+ speed=metres<=Math.Max(5,Math.Max(f.Accuracy,previous.Accuracy)/2)?0:metres/delta*3.6;
+ }
+ if(speed is <=3){
+ if(first!=null&&Engine.Distance(first.Lat,first.Lon,f.Lat,f.Lon)>Math.Max(30,Math.Max(first.Accuracy,f.Accuracy)*2))Close("Deslocamento detectado");
+ first??=(previous!=null&&f.Speed==null&&previous.Speed is null or <=3?previous:f);
+ stationary=f;
+ }else if(speed!=null)Close("Retomada do movimento");
+ previous=f;
+ }
+ public IReadOnlyList<GpsStop> Complete(DateTimeOffset now){
+ if(completed)return stops;
+ var state=trip.Finished!=null||Engine.Terminal(trip)?"Viagem encerrada":!Engine.TrackingActive(trip)?"Rastreamento inativo":previous==null||previous.TrackingSince!=trip.TrackingSince?"Autorização interrompida":(now-previous.At).TotalSeconds>trip.GapSeconds?"Lacuna GPS":"Em andamento";
+ Close(state);completed=true;return stops;
+ }
+}
