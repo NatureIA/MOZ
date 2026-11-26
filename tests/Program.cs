@@ -70,4 +70,10 @@ Check(Engine.ValidCargoRoles(new string?[]{"origin",null,"destination",null}),"e
 Check(!Engine.ValidCargoRoles(new string?[]{"destination","origin"}),"cargo endpoints in sequence");
 Check(!Engine.ValidCargoRoles(new string?[]{"origin","origin","destination"}),"single origin");
 Check(!Engine.ValidCargoRoles(new string?[]{null,"destination"}),"origin required");
+var collectionStage=new Stage{CargoRole="origin",Order=0,Arrived=epoch,Departed=epoch.AddMinutes(60)};
+var deliveryStage=new Stage{CargoRole="destination",Order=1,Arrived=epoch.AddHours(4),FinishOnPod=true};
+var evidence=new Pod{StageId=deliveryStage.Id,LocationVerified=true,Captured=epoch.AddHours(4.5)};
+var metrics=TripTiming.Measure(new Trip{Status="Finalizada",Started=epoch,Finished=evidence.Captured},new[]{collectionStage,deliveryStage},new[]{evidence},_=>null);
+Check(metrics.LoadingSeconds==3600&&metrics.UnloadingSeconds==1800&&metrics.HandlingSeconds==5400&&metrics.TravelSeconds==10800,"cargo dwell, verified POD, journey duration");
+Check(TripTiming.Measure(new Trip(),new[]{collectionStage,deliveryStage},Array.Empty<Pod>(),_=>null).UnloadingSeconds==null,"missing evidence not invented");
 Console.WriteLine("Geometry and input rules passed.");
