@@ -11,10 +11,11 @@ public static class Api {
  static Guid Actor(HttpContext c)=>Guid.TryParse(c.User.FindFirstValue("sub"),out var id)?id:Guid.Empty;
  static async Task<User?> Current(HttpContext c,MozDb db){
  var u=await db.Users.SingleOrDefaultAsync(x=>x.Id==Actor(c)&&x.Active);
+ if(u!=null&&u.Role is not ("global" or "operator" or "client" or "driver"))return null;
  if(u?.TenantId is {} id&&!await db.Tenants.AnyAsync(t=>t.Id==id&&t.Active))return null;return u;
  }
  static IQueryable<Trip> Visible(MozDb db,User u)=>u.Role switch{
- "operator" or "observer" when u.TenantId.HasValue=>db.Trips.Where(t=>t.TenantId==u.TenantId),
+ "operator"=>db.Trips.Where(t=>t.TenantId==u.TenantId),
  "client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),
  "driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),
  _=>db.Trips.Where(t=>false)};
@@ -48,7 +49,7 @@ public static class Api {
  });
  api.MapPost("/clients",async(NameInput x,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(!Operator(u))return Results.Forbid();if(!TextOk(x.Name))return Bad("Nome obrigatório.");var cl=new Client{TenantId=u!.TenantId!.Value,Name=x.Name.Trim()};db.Clients.Add(cl);Record(db,u,"Criar cliente",cl.Id.ToString());return await Save(db);});
  api.MapPost("/users",async(UserInput x,HttpContext c,MozDb db,IPasswordHasher<User> hasher)=>{
- var u=await Current(c,db);if(!Operator(u))return Results.Forbid();if(!TextOk(x.Name)||!TextOk(x.Email,256)||!x.Email.Contains('@')||!PasswordOk(x.Password)||x.Role is not ("operator" or "observer" or "client"))return Bad("Dados inválidos.");
+ var u=await Current(c,db);if(!Operator(u))return Results.Forbid();if(!TextOk(x.Name)||!TextOk(x.Email,256)||!x.Email.Contains('@')||!PasswordOk(x.Password)||x.Role is not ("operator" or "client"))return Bad("Dados inválidos.");
  if(x.Role=="client"&&!await db.Clients.AnyAsync(z=>z.Id==x.ClientId&&z.TenantId==u!.TenantId))return Bad("Cliente inválido.");
  var a=new User{TenantId=u!.TenantId,ClientId=x.Role=="client"?x.ClientId:null,Name=x.Name.Trim(),Login=x.Email.Trim().ToLowerInvariant(),Role=x.Role,IdentityVerified=true};a.PasswordHash=hasher.HashPassword(a,x.Password);db.Users.Add(a);Record(db,u,"Criar usuário",a.Id.ToString());return await Save(db);
  });
@@ -150,7 +151,7 @@ public static class Api {
  });
  api.MapPost("/notices/{id:guid}/read",async(Guid id,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await db.Events.AnyAsync(x=>x.Id==id&&Visible(db,u).Any(t=>t.Id==x.TripId)))return Results.NotFound();if(!await db.Reads.AnyAsync(r=>r.UserId==u.Id&&r.EventId==id))db.Reads.Add(new ReadNotice{UserId=u.Id,EventId=id});return await Save(db);});
  api.MapGet("/reports/trips.csv",async(HttpContext c,MozDb db,DateTimeOffset? from,DateTimeOffset? to)=>{
- var u=await Current(c,db);if(u==null||u.Role is not("operator" or "observer" or "client"))return Results.Forbid();
+ var u=await Current(c,db);if(u==null||u.Role is not("operator" or "client"))return Results.Forbid();
  if(from.HasValue&&to.HasValue&&from.Value>=to.Value)return Bad("Período inválido.");
  var q=Visible(db,u).AsNoTracking();
  if(from.HasValue)q=q.Where(t=>t.Scheduled>=from.Value);if(to.HasValue)q=q.Where(t=>t.Scheduled<to.Value);
@@ -164,7 +165,7 @@ public static class Api {
  c.Response.Headers.CacheControl="no-store";
  return Results.File(Encoding.UTF8.GetBytes("\uFEFF"+csv.ToString()),"text/csv; charset=utf-8","moz-viagens.csv");
  });
- api.MapGet("/reports",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null||u.Role is not("operator" or "observer" or "client"))return Results.Forbid();var q=Visible(db,u);return Results.Ok(new{total=await q.CountAsync(),finalized=await q.CountAsync(t=>t.Status=="Finalizada"),active=await q.CountAsync(t=>t.Finished==null&&t.Started!=null),scheduled=await q.CountAsync(t=>t.Status=="Programada"),distanceKm=await q.SumAsync(t=>t.DistanceKm),movingHours=await q.SumAsync(t=>t.MovingSeconds)/3600,idleHours=await q.SumAsync(t=>t.IdleSeconds)/3600});});
+ api.MapGet("/reports",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null||u.Role is not("operator" or "client"))return Results.Forbid();var q=Visible(db,u);return Results.Ok(new{total=await q.CountAsync(),finalized=await q.CountAsync(t=>t.Status=="Finalizada"),active=await q.CountAsync(t=>t.Finished==null&&t.Started!=null),scheduled=await q.CountAsync(t=>t.Status=="Programada"),distanceKm=await q.SumAsync(t=>t.DistanceKm),movingHours=await q.SumAsync(t=>t.MovingSeconds)/3600,idleHours=await q.SumAsync(t=>t.IdleSeconds)/3600});});
  }
 }
 public record TenantInput(string Name,string AdminName,string Email,string Password,string? Plan,int TripLimit);
