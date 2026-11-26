@@ -19,10 +19,11 @@ jobs:
       - name: Install map library
         shell: pwsh
         run: |
-          npm install --no-save --package-lock=false maplibre-gl@4.7.1
+          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7
           New-Item -ItemType Directory -Force wwwroot/vendor | Out-Null
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.js wwwroot/vendor/
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.css wwwroot/vendor/
+          Copy-Item node_modules/@microsoft/signalr/dist/browser/signalr.min.js wwwroot/vendor/
           Copy-Item node_modules/maplibre-gl/LICENSE.txt wwwroot/vendor/ -ErrorAction SilentlyContinue
       - name: Validate frontend
         run: |

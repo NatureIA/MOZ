@@ -44,6 +44,22 @@ app.Use(async(c,next)=>{
  await next();
 });
 app.UseDefaultFiles();app.UseStaticFiles();app.UseRouting();app.UseRateLimiter();app.UseAuthentication();app.UseAuthorization();
+app.Use(async(c,next)=>{
+ await next();
+ if(c.Response.StatusCode>=200&&c.Response.StatusCode<300&&c.Request.Method=="POST"&&c.Request.Path.StartsWithSegments("/api/trips")&&c.User.Identity?.IsAuthenticated==true){
+ try{
+ var db=c.RequestServices.GetRequiredService<MozDb>();var hub=c.RequestServices.GetRequiredService<IHubContext<MozHub>>();
+ var segments=c.Request.Path.Value!.Split('/',StringSplitOptions.RemoveEmptyEntries);
+ if(segments.Length>=3&&Guid.TryParse(segments[2],out var tid)){
+ var t=await db.Trips.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==tid);
+ if(t!=null)await MozRealtime.Publish(hub,t);
+ }else if(segments.Length==2&&Guid.TryParse(c.User.FindFirstValue("sub"),out var uid)){
+ var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==uid&&x.Active);
+ if(u?.TenantId is {} tenant)await hub.Clients.Group("operator:"+tenant).SendAsync("changed");
+ }
+ }catch(Exception ex){app.Logger.LogWarning("Live update dispatch failed: {Type}",ex.GetType().Name);}
+ }
+});
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
 app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.0",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
@@ -60,6 +76,18 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  using var scope=app.Services.CreateScope();
  var db=scope.ServiceProvider.GetRequiredService<MozDb>();
  startup.Step="ensure-created";await db.Database.EnsureCreatedAsync();
+ startup.Step="route-schema";await db.Database.ExecuteSqlRawAsync("""
+ IF OBJECT_ID(N'dbo.Plans',N'U') IS NULL
+ CREATE TABLE [dbo].[Plans](
+ [TripId] uniqueidentifier NOT NULL PRIMARY KEY,
+ [Coordinates] nvarchar(max) NOT NULL,
+ [ToleranceMetres] float NOT NULL,
+ [Outside] bit NOT NULL,
+ [OutsideCount] int NOT NULL,
+ [InsideCount] int NOT NULL,
+ CONSTRAINT [FK_Plans_Trips_TripId] FOREIGN KEY([TripId]) REFERENCES [dbo].[Trips]([Id])
+ );
+ """);
  startup.Step="check-global";if(!await db.Users.AnyAsync(x=>x.Role=="global")){
  startup.Step="seed-credentials";var email=cfg["SeedAdmin:Email"]?.Trim().ToLowerInvariant();var pass=cfg["SeedAdmin:Password"];
  if(string.IsNullOrWhiteSpace(email)||string.IsNullOrWhiteSpace(pass)||pass.Length<12)throw new InvalidOperationException("Global bootstrap credentials missing or password too short");
@@ -93,6 +121,23 @@ app.MapHub<MozHub>("/hubs/events").RequireAuthorization();
 app.Run();
 public record LoginInput(string Login,string Password);
 public record DriverInput(string Name,string Cpf,string Phone,string Password);
-public class MozHub:Hub {}
+public class MozHub(MozDb db):Hub {
+ public override async Task OnConnectedAsync(){
+ if(!Guid.TryParse(Context.User?.FindFirstValue("sub"),out var id)){Context.Abort();return;}
+ var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id&&x.Active);
+ if(u==null||(u.TenantId is {} tid&&!await db.Tenants.AnyAsync(t=>t.Id==tid&&t.Active))){Context.Abort();return;}
+ if(u.Role=="operator"&&u.TenantId is {} tenant)await Groups.AddToGroupAsync(Context.ConnectionId,"operator:"+tenant);
+ else if(u.Role=="client"&&u.ClientId is {} client&&u.TenantId is {} ct)await Groups.AddToGroupAsync(Context.ConnectionId,"client:"+ct+":"+client);
+ else if(u.Role=="driver"&&u.IdentityVerified)await Groups.AddToGroupAsync(Context.ConnectionId,"driver:"+u.Id);
+ await base.OnConnectedAsync();
+ }
+}
+public static class MozRealtime{
+ public static async Task Publish(IHubContext<MozHub> hub,Trip t){
+ var groups=new List<string>{"operator:"+t.TenantId,"client:"+t.TenantId+":"+t.ClientId};
+ if(t.DriverId is {} driver)groups.Add("driver:"+driver);
+ await hub.Clients.Groups(groups).SendAsync("changed");
+ }
+}
 
 public class StartupState { public volatile bool Ready; public volatile bool Failed; public volatile string Step="starting"; public string? ErrorType; public int? ErrorNumber; }
