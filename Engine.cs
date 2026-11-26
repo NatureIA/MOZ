@@ -133,9 +133,9 @@ public static class TripTiming {
  double? Duration(DateTimeOffset? start,DateTimeOffset? end)=>start.HasValue&&end.HasValue&&end>=start?(end.Value-start.Value).TotalSeconds:null;
  var load=Duration(origin?.Arrived,oe.At);var unload=Duration(destination?.Arrived,de.At);
  var from=origin?.Departed;var until=destination?.Arrived;
- if(from.HasValue&&!until.HasValue&&destination!=null&&t.LastFix>=from)until=t.LastFix;
+ if(from.HasValue&&!until.HasValue&&destination!=null&&t.LastFix.HasValue&&t.LastFix.Value>=from.Value)until=t.LastFix;
  var travel=Duration(from,until);
- var handling=load.HasValue&&unload.HasValue&&oe.At<=destination?.Arrived?load+unload:null;
+ double? handling=load.HasValue&&unload.HasValue&&oe.At.HasValue&&destination?.Arrived is {} arrived&&oe.At.Value<=arrived?load+unload:null;
  return new(origin?.Id,destination?.Id,load,unload,handling,travel,from,travel.HasValue?until:null,oe.Basis=="Última evidência dentro da cerca"&&!Engine.Terminal(t),de.Basis=="Última evidência dentro da cerca"&&!Engine.Terminal(t),travel.HasValue&&destination?.Arrived==null&&!Engine.Terminal(t),oe.Basis,de.Basis,legacy?"Classificação legada por tipo de etapa":"Origem e destino definidos");
  }
 }
