@@ -29,7 +29,7 @@ public static class Api {
  }
  static readonly JsonSerializerOptions TripJson=new(JsonSerializerDefaults.Web);
  static JsonObject TripView(Trip t,User u,Client? client=null){
- var view=JsonSerializer.SerializeToNode(t,TripJson)!.AsObject();view["tripReference"]=t.Container;
+ var view=JsonSerializer.SerializeToNode(t,TripJson)!.AsObject();view["tripReference"]=t.Container;view["trackingActive"]=Engine.TrackingActive(t);
  if(u.Role=="operator"){view["clientName"]=client?.Name;view["clientCnpj"]=client?.Cnpj;}
  else{view.Remove("clientId");}
  return view;
@@ -128,6 +128,11 @@ public static class Api {
  if(tenant.TripLimit>0&&open.Count>=tenant.TripLimit)return Bad("Limite de viagens ativas atingido.");
  db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, motorista pendente de verificação":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){await transaction.CommitAsync();try{await MozRealtime.Publish(hub,t);}catch{}}return result;
  });
+ api.MapGet("/driver/tracking",async(HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(u?.Role!="driver"||!u.IdentityVerified)return Results.Forbid();
+ var t=await db.Trips.AsNoTracking().Where(z=>z.DriverId==u.Id&&z.TrackingSince!=null&&z.Finished==null&&z.Status!="Finalizada"&&z.Status!="Cancelada"&&db.Tenants.Any(a=>a.Id==z.TenantId&&a.Active)).Select(z=>new{z.Id,z.TrackingSince}).SingleOrDefaultAsync();
+ return Results.Ok(new{tripId=t?.Id,trackingSince=t?.TrackingSince,leaseSeconds=15});
+ });
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();
  var client=Operator(u)?await db.Clients.SingleOrDefaultAsync(z=>z.Id==t.ClientId&&z.TenantId==u.TenantId):null;
@@ -141,31 +146,46 @@ public static class Api {
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);if(t==null)return Results.NotFound();
  if(Engine.Terminal(t))return Bad("Viagem encerrada.");
  var s=await CurrentStage(db,t);
- if(x.Action=="start"&&u.Role=="driver"&&t.Started==null){
- if(await db.Trips.AnyAsync(z=>z.Id!=id&&z.DriverId==u.Id&&z.Started!=null&&z.Finished==null&&z.Status!="Cancelada"))return Bad("Já existe uma viagem ativa.");
- t.Started=DateTimeOffset.UtcNow;t.Status="Em operação";db.Events.Add(Engine.Event(t,"Operação iniciada","Motorista iniciou operação","Motorista",actor:u.Id));
- }else if(x.Action=="work-start"&&u.Role=="driver"&&s?.Arrived!=null&&s.Departed==null&&s.WorkStart==null){s.WorkStart=DateTimeOffset.UtcNow;t.Status="Em "+s.Kind;db.Events.Add(Engine.Event(t,"Início de "+s.Kind,"Início confirmado pelo motorista","Motorista",actor:u.Id,stage:s));}
- else if(x.Action=="work-end"&&u.Role=="driver"&&s?.WorkStart!=null&&s.WorkEnd==null&&s.Departed==null){s.WorkEnd=DateTimeOffset.UtcNow;t.Status=s.RequirePod?"Aguardando comprovante":s.Kind+" concluída";db.Events.Add(Engine.Event(t,"Fim de "+s.Kind,"Término confirmado pelo motorista","Motorista",actor:u.Id,stage:s));}
+ if(x.Action=="activate"&&Operator(u)){
+ if(Engine.TrackingActive(t))return Results.Ok();
+ if(t.DriverId==null||!await db.Users.AnyAsync(d=>d.Id==t.DriverId&&d.Role=="driver"&&d.Active&&d.IdentityVerified))return Bad("O motorista precisa ter uma conta com identidade conferida antes da ativação.");
+ if(await db.Trips.AnyAsync(z=>z.Id!=id&&z.DriverCpf==t.DriverCpf&&z.TrackingSince!=null&&z.Finished==null))return Results.Conflict(new{error="O motorista já possui uma viagem ativa."});
+ var now=DateTimeOffset.UtcNow;bool first=t.Started==null;t.TrackingSince=now;
+ if(first){t.Started=now;t.Status="Em operação";}
+ t.GapAlerted=false;t.StopSince=null;t.StopAlerted=false;t.StopLat=null;t.StopLon=null;
+ if(s!=null){s.InsideCount=0;s.OutsideCount=0;s.FirstInside=null;s.FirstOutside=null;}
+ var plan=await db.Plans.SingleOrDefaultAsync(z=>z.TripId==id);if(plan!=null){plan.OutsideCount=0;plan.InsideCount=0;}
+ db.Events.Add(Engine.Event(t,first?"Operação iniciada":"Rastreamento reativado",first?"Operador ativou a viagem":"Operador retomou o rastreamento","Operador",now,u.Id));
+ }else if(x.Action=="deactivate"&&Operator(u)){
+ if(!Engine.TrackingActive(t))return Results.Ok();
+ t.TrackingSince=null;t.GapAlerted=false;t.StopSince=null;t.StopAlerted=false;
+ db.Events.Add(Engine.Event(t,"Rastreamento inativado","Operador interrompeu o rastreamento","Operador",actor:u.Id));
+ }else if(x.Action=="work-start"&&u.Role=="driver"&&Engine.TrackingActive(t)&&s?.Arrived!=null&&s.Departed==null&&s.WorkStart==null){s.WorkStart=DateTimeOffset.UtcNow;t.Status="Em "+s.Kind;db.Events.Add(Engine.Event(t,"Início de "+s.Kind,"Início confirmado pelo motorista","Motorista",actor:u.Id,stage:s));}
+ else if(x.Action=="work-end"&&u.Role=="driver"&&Engine.TrackingActive(t)&&s?.WorkStart!=null&&s.WorkEnd==null&&s.Departed==null){s.WorkEnd=DateTimeOffset.UtcNow;t.Status=s.RequirePod?"Aguardando comprovante":s.Kind+" concluída";db.Events.Add(Engine.Event(t,"Fim de "+s.Kind,"Término confirmado pelo motorista","Motorista",actor:u.Id,stage:s));}
  else if(x.Action=="occurrence"&&(u.Role is "driver" or "operator")&&TextOk(x.Message,1000)){db.Events.Add(Engine.Event(t,"Ocorrência",x.Message!,u.Role,actor:u.Id,stage:s));}
- else if(x.Action=="cancel"&&u.Role=="operator"&&TextOk(x.Message,1000)){t.Status="Cancelada";t.Finished=DateTimeOffset.UtcNow;db.Events.Add(Engine.Event(t,"Cancelada",x.Message!,"Operador",actor:u.Id));}
+ else if(x.Action=="cancel"&&u.Role=="operator"&&TextOk(x.Message,1000)){t.Status="Cancelada";t.Finished=DateTimeOffset.UtcNow;t.TrackingSince=null;db.Events.Add(Engine.Event(t,"Cancelada",x.Message!,"Operador",actor:u.Id));}
  else return Bad("Ação indisponível para este estado.");
  Record(db,u,x.Action,t.Id.ToString());return await Save(db);
  });
  api.MapPost("/trips/{id:guid}/fixes",async(Guid id,FixInput[] input,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u?.Role!="driver")return Results.Forbid();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);
- if(t==null)return Results.NotFound();if(t.Started==null)return Bad("Viagem não está ativa.");
- if(Engine.Terminal(t)){var ids=input.Select(z=>z.Id).ToArray();var saved=await db.Fixes.Where(z=>z.TripId==id&&ids.Contains(z.Id)).Select(z=>z.Id).ToListAsync();return Results.Ok(new{acceptedIds=saved,status=t.Status});}
- if(input.Length is <1 or >100)return Bad("Lote inválido.");
+ if(t==null)return Results.NotFound();
+ if(input==null||input.Length is <1 or >100)return Bad("Lote inválido.");
+ var ids=input.Select(z=>z.Id).ToArray();var saved=await db.Fixes.Where(z=>z.TripId==id&&ids.Contains(z.Id)).Select(z=>z.Id).ToListAsync();
+ var authorized=Engine.TrackingActive(t)&&await db.Tenants.AnyAsync(z=>z.Id==t.TenantId&&z.Active);
+ if(!authorized)return Results.Ok(new{acceptedIds=saved,discardIds=ids.Except(saved).ToArray(),status=t.Status,trackingActive=false});
+ // Force a rowversion check even when a batch consists only of rejected fixes.
+ db.Entry(t).Property(z=>z.TrackingSince).IsModified=true;
  var count=await db.Stages.CountAsync(s=>s.TripId==id);var stage=await CurrentStage(db,t);var plan=await db.Plans.SingleOrDefaultAsync(p=>p.TripId==id);
- var processed=new List<Guid>();
+ var processed=new List<Guid>();var discarded=new List<Guid>();
  foreach(var x in input.OrderBy(z=>z.At)){
- if(x.Id==Guid.Empty||!Engine.ValidPoint(x.Lat,x.Lon)||!double.IsFinite(x.Accuracy)||x.Accuracy<0||x.Speed is <0 or >250||x.At<t.Started.Value.AddMinutes(-1)||x.At>DateTimeOffset.UtcNow.AddMinutes(2))continue;
- if(processed.Contains(x.Id)||await db.Fixes.AnyAsync(z=>z.Id==x.Id&&z.TripId==id)){processed.Add(x.Id);continue;}
+ if(processed.Contains(x.Id)||saved.Contains(x.Id)){processed.Add(x.Id);continue;}
+ if(!Engine.FixAuthorized(t,x.TrackingSince,x.At)||x.Id==Guid.Empty||!Engine.ValidPoint(x.Lat,x.Lon)||!double.IsFinite(x.Accuracy)||x.Accuracy<0||x.Speed is <0 or >250||x.At>DateTimeOffset.UtcNow.AddMinutes(2)){discarded.Add(x.Id);continue;}
  var valid=!Engine.Terminal(t)&&x.Accuracy<=t.MaxAccuracy&&(t.LastFix==null||x.At>t.LastFix);
  var f=new Fix{Id=x.Id,TripId=id,At=x.At,Lat=x.Lat,Lon=x.Lon,Accuracy=x.Accuracy,Speed=x.Speed,Accepted=valid};db.Fixes.Add(f);
  var old=t.CurrentStage;Engine.Process(t,stage,count,f,db);Engine.AuditRoute(t,plan,f,db);if(t.CurrentStage!=old)stage=await CurrentStage(db,t);processed.Add(x.Id);
  }
- try{await db.SaveChangesAsync();return Results.Ok(new{acceptedIds=processed,status=t.Status});}catch(DbUpdateException){return Results.Conflict(new{error="Lote concorrente; tente novamente."});}
+ try{await db.SaveChangesAsync();return Results.Ok(new{acceptedIds=processed,discardIds=discarded,status=t.Status,trackingActive=Engine.TrackingActive(t)});}catch(DbUpdateException){return Results.Conflict(new{error="Lote concorrente; tente novamente."});}
  });
  api.MapPost("/trips/{id:guid}/pod",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u?.Role!="driver")return Results.Forbid();var t=await Visible(db,u).SingleOrDefaultAsync(z=>z.Id==id);if(t==null)return Results.NotFound();
@@ -216,7 +236,7 @@ public static class Api {
  c.Response.Headers.CacheControl="no-store";
  return Results.File(Encoding.UTF8.GetBytes("\uFEFF"+csv.ToString()),"text/csv; charset=utf-8","moz-viagens.csv");
  });
- api.MapGet("/reports",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null||u.Role is not("operator" or "client"))return Results.Forbid();var q=Visible(db,u);return Results.Ok(new{total=await q.CountAsync(),finalized=await q.CountAsync(t=>t.Status=="Finalizada"),active=await q.CountAsync(t=>t.Finished==null&&t.Started!=null),scheduled=await q.CountAsync(t=>t.Status=="Programada"),distanceKm=await q.SumAsync(t=>t.DistanceKm),movingHours=await q.SumAsync(t=>t.MovingSeconds)/3600,idleHours=await q.SumAsync(t=>t.IdleSeconds)/3600});});
+ api.MapGet("/reports",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null||u.Role is not("operator" or "client"))return Results.Forbid();var q=Visible(db,u);return Results.Ok(new{total=await q.CountAsync(),finalized=await q.CountAsync(t=>t.Status=="Finalizada"),active=await q.CountAsync(t=>t.Finished==null&&t.TrackingSince!=null),scheduled=await q.CountAsync(t=>t.Status=="Programada"),distanceKm=await q.SumAsync(t=>t.DistanceKm),movingHours=await q.SumAsync(t=>t.MovingSeconds)/3600,idleHours=await q.SumAsync(t=>t.IdleSeconds)/3600});});
  }
 }
 public record TenantInput(string Name,string AdminName,string Email,string Password,string? Plan,int TripLimit);
@@ -232,4 +252,4 @@ public record PlaceInput(string Name,string Address,double Lat,double Lon,double
 public record StageInput(Guid PlaceId,string Label,string? Kind,bool RequirePod,bool FinishOnPod,int SlaMinutes);
 public record TripInput(Guid ClientId,string DriverCpf,string? Carrier,string? Tractor,string? Trailer,string? Container,DateTimeOffset Scheduled,double SpeedLimit,double MaxAccuracy,int StopSeconds,int GapSeconds,StageInput[] Stages,string? PlannedRoute=null,double RouteTolerance=200,string? DriverName=null,string? TripReference=null);
 public record ActionInput(string Action,string? Message);
-public record FixInput(Guid Id,DateTimeOffset At,double Lat,double Lon,double Accuracy,double? Speed);
+public record FixInput(Guid Id,DateTimeOffset At,double Lat,double Lon,double Accuracy,double? Speed,DateTimeOffset? TrackingSince=null);

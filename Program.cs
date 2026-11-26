@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.3",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.4",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
@@ -102,6 +102,12 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  EXEC(N'CREATE UNIQUE INDEX [IX_Clients_TenantId_Cnpj] ON [dbo].[Clients]([TenantId],[Cnpj]) WHERE [Cnpj] IS NOT NULL');
  IF OBJECT_ID(N'dbo.OperatorDrivers',N'U') IS NULL
  CREATE TABLE [dbo].[OperatorDrivers]([TenantId] uniqueidentifier NOT NULL,[Cpf] nvarchar(11) NOT NULL,[Name] nvarchar(160) NOT NULL,CONSTRAINT [PK_OperatorDrivers] PRIMARY KEY([TenantId],[Cpf]));
+ """);
+ startup.Step="tracking-schema";await db.Database.ExecuteSqlRawAsync("""
+ IF COL_LENGTH(N'dbo.Trips',N'TrackingSince') IS NULL
+ ALTER TABLE [dbo].[Trips] ADD [TrackingSince] datetimeoffset NULL;
+ IF NOT EXISTS(SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.Trips') AND name=N'IX_Trips_DriverCpf')
+ EXEC(N'CREATE UNIQUE INDEX [IX_Trips_DriverCpf] ON [dbo].[Trips]([DriverCpf]) WHERE [TrackingSince] IS NOT NULL AND [Finished] IS NULL');
  """);
  startup.Step="check-global";if(!await db.Users.AnyAsync(x=>x.Role=="global")){
  startup.Step="seed-credentials";var email=cfg["SeedAdmin:Email"]?.Trim().ToLowerInvariant();var pass=cfg["SeedAdmin:Password"];

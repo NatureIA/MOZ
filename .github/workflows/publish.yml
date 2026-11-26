@@ -105,9 +105,9 @@ jobs:
           for ($i=1; $i -le 18; $i++) {
             try {
               $h=Invoke-RestMethod -Uri "https://moz.runasp.net/health" -TimeoutSec 15
-              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.2.3") { exit 0 }
+              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.2.4") { exit 0 }
               Write-Host "Health status=$($h.status) database=$($h.database) version=$($h.version) step=$($h.databaseStep) type=$($h.databaseErrorType) sql=$($h.databaseErrorNumber)"
-              if ($h.app -eq "MOZ" -and $h.version -eq "0.2.3" -and $h.status -eq "error") { break }
+              if ($h.app -eq "MOZ" -and $h.version -eq "0.2.4" -and $h.status -eq "error") { break }
             } catch {
               $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "none" }
               Write-Host "Health HTTP=$code attempt=$i type=$($_.Exception.GetType().Name)"
