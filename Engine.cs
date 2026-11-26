@@ -56,7 +56,7 @@ public static class Engine {
  bool inside=Contains(f.Lat,f.Lon,stage.Lat,stage.Lon,stage.Radius,stage.Polygon);
  bool outside=!Contains(f.Lat,f.Lon,stage.Lat,stage.Lon,stage.Radius,stage.Polygon,Math.Max(15,f.Accuracy));
  if(stage.Arrived==null){if(inside){stage.FirstInside??=f.At;stage.InsideCount++;if(stage.InsideCount>=2){stage.Arrived=stage.FirstInside;t.Status="No local: "+stage.Label;db.Events.Add(Event(t,"Chegada","Chegada à etapa "+stage.Label+" ("+stage.Kind+")","GPS",stage.Arrived,stage:stage));}}else{stage.InsideCount=0;stage.FirstInside=null;}return;}
- if(outside){stage.FirstOutside??=f.At;stage.OutsideCount++;if(stage.OutsideCount>=2&&stage.Departed==null){stage.Departed=stage.FirstOutside;db.Events.Add(Event(t,"Saída","Saída da etapa "+stage.Label+" ("+stage.Kind+")","GPS",stage.Departed,stage:stage));if(stage.RequirePod&&!db.Pods.Any(p=>p.StageId==stage.Id)){t.Status="Aguardando comprovante";}else Advance(t,stage,count,db,stage.Departed.Value);}}
+ if(outside){stage.FirstOutside??=f.At;stage.OutsideCount++;if(stage.OutsideCount>=2&&stage.Departed==null){stage.Departed=stage.FirstOutside;db.Events.Add(Event(t,"Saída","Saída da etapa "+stage.Label+" ("+stage.Kind+")","GPS",stage.Departed,stage:stage));if(stage.RequirePod&&!db.Pods.Any(p=>p.StageId==stage.Id&&(stage.CargoRole!="destination"||p.LocationVerified))){t.Status="Aguardando comprovante";}else Advance(t,stage,count,db,stage.Departed.Value);}}
  else{stage.OutsideCount=0;stage.FirstOutside=null;}
  }
 }
