@@ -4,6 +4,7 @@ import PhotosUI
 import BackgroundTasks
 
 @main
+@MainActor
 struct MOZDriverApp: App {
     @StateObject private var model = DriverModel()
     @Environment(\.scenePhase) private var phase
@@ -37,13 +38,9 @@ struct RootView: View {
             if !model.message.isEmpty {
                 Text(model.message).font(.footnote).padding(12).frame(maxWidth: .infinity)
                     .background(.thinMaterial)
-                    .accessibilityLiveRegionIfAvailable()
             }
         }
     }
-}
-private extension View {
-    func accessibilityLiveRegionIfAvailable() -> some View { accessibilityLabel("Status:").accessibilityAddTraits(.updatesFrequently) }
 }
 struct SignInView: View {
     @EnvironmentObject var model: DriverModel
