@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.6",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.7",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
@@ -112,6 +112,10 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  startup.Step="stop-audit-schema";await db.Database.ExecuteSqlRawAsync("""
  IF COL_LENGTH(N'dbo.Fixes',N'TrackingSince') IS NULL
  ALTER TABLE [dbo].[Fixes] ADD [TrackingSince] datetimeoffset NULL;
+ """);
+ startup.Step="cargo-endpoints-schema";await db.Database.ExecuteSqlRawAsync("""
+ IF COL_LENGTH(N'dbo.Stages',N'CargoRole') IS NULL
+ ALTER TABLE [dbo].[Stages] ADD [CargoRole] nvarchar(max) NULL;
  """);
  startup.Step="check-global";if(!await db.Users.AnyAsync(x=>x.Role=="global")){
  startup.Step="seed-credentials";var email=cfg["SeedAdmin:Email"]?.Trim().ToLowerInvariant();var pass=cfg["SeedAdmin:Password"];
