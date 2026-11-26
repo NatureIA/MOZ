@@ -12,13 +12,15 @@ w.patchTripRows(container,'<div class="table-scroll"><table><tbody><tr data-trip
 assert.equal(container.firstElementChild,wrapper);assert.equal(container.querySelector('tr'),row);assert.equal(row.cells[0].textContent,'12 km');assert.equal(doc.activeElement,button);assert.equal(wrapper.scrollLeft,35);assert.equal(container.querySelectorAll('tr').length,2);
 let instances=0,updates=0,removed=0,fits=0,lastMap=null;
 class FakeMap{constructor(){instances++;lastMap=this;this.handlers={};this.sources={};this.layers={};}addControl(){}on(event,...args){if(args.length===1)this.handlers[event]=args[0];}fitBounds(){fits++;}getSource(id){return this.sources[id];}addSource(id,source){this.sources[id]={data:source.data,setData(data){this.data=data;updates++;}};}addLayer(layer){this.layers[layer.id]=layer;}remove(){removed++;}}
-w.maplibregl={Map:FakeMap,NavigationControl:class{},LngLatBounds:class{extend(){}}};
+class FakeMarker{constructor(o){this.element=o.element;this.offset=o.offset;}setLngLat(c){this.coords=c;return this;}setOffset(o){this.offset=o;return this;}addTo(){doc.getElementById('fleetMap').append(this.element);return this;}remove(){this.element.remove();}}
+w.maplibregl={Map:FakeMap,Marker:FakeMarker,NavigationControl:class{},LngLatBounds:class{extend(){}}};
 w.eval(fs.readFileSync('wwwroot/maps.js','utf8'));
 const a={id:'a',code:'MOZ-A',tractor:'ABC1D23',lastLat:-27.8,lastLon:-50.3,status:'Em trânsito'};
-w.MozMaps.fleet('fleetMap',[a]);lastMap.handlers.load();assert.equal(lastMap.getSource('vehicles').data.features[0].properties.plate,'ABC1D23');assert.equal(lastMap.layers['vehicle-plates'].type,'symbol');assert.equal(lastMap.layers['vehicle-plates'].layout['text-allow-overlap'],true);
+w.MozMaps.fleet('fleetMap',[a]);lastMap.handlers.load();assert.equal(lastMap.getSource('vehicles').data.features[0].properties.plate,'ABC1D23');const label=doc.querySelector('.fleet-plate');assert.equal(label.textContent,'ABC1D23');assert.equal(label.tagName,'BUTTON');
 w.MozMaps.fleet('fleetMap',[a]);assert.equal(updates,0);
-w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2}]);assert.equal(instances,1);assert.equal(removed,0);assert.equal(fits,1);assert.equal(updates,1);assert.equal(lastMap.getSource('vehicles').data.features[0].geometry.coordinates[0],-50.2);
-w.MozMaps.clear();assert.equal(removed,1);
+w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2}]);assert.equal(instances,1);assert.equal(removed,0);assert.equal(fits,1);assert.equal(updates,1);assert.equal(lastMap.getSource('vehicles').data.features[0].geometry.coordinates[0],-50.2);assert.equal(doc.querySelector('.fleet-plate'),label);
+w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2,stale:true}]);assert.ok(label.classList.contains('is-stale'));
+w.MozMaps.clear();assert.equal(removed,1);assert.equal(doc.querySelectorAll('.fleet-plate').length,0);
 const at='2026-11-26T12:00:00Z';const pts=[{lat:-27.8,lon:-50.3,at},{lat:-27.8,lon:-50.2998,at:'2026-11-26T12:00:05Z'},{lat:-27.8,lon:-50.29,at:'2026-11-26T12:00:10Z'}];assert.equal(w.MozMaps.observedLines(pts,120).length,1);assert.equal(w.MozMaps.observedLines(pts,120)[0].length,2);assert.equal(w.MozMaps.observedLines([pts[0],pts[2]],120).length,0);
 dom.window.close();
 console.log('Live update: stable row, focus, scroll, map and camera.');
