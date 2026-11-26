@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.1",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.2",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
@@ -95,6 +95,14 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  CREATE INDEX [IX_PushDevices_NextAttempt] ON [dbo].[PushDevices]([NextAttempt]);
  END;
  """);
+ startup.Step="client-driver-schema";await db.Database.ExecuteSqlRawAsync("""
+ IF COL_LENGTH(N'dbo.Clients',N'Cnpj') IS NULL
+ ALTER TABLE [dbo].[Clients] ADD [Cnpj] nvarchar(14) NULL;
+ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.Clients') AND name=N'IX_Clients_TenantId_Cnpj')
+ EXEC(N'CREATE UNIQUE INDEX [IX_Clients_TenantId_Cnpj] ON [dbo].[Clients]([TenantId],[Cnpj]) WHERE [Cnpj] IS NOT NULL');
+ IF OBJECT_ID(N'dbo.OperatorDrivers',N'U') IS NULL
+ CREATE TABLE [dbo].[OperatorDrivers]([TenantId] uniqueidentifier NOT NULL,[Cpf] nvarchar(11) NOT NULL,[Name] nvarchar(160) NOT NULL,CONSTRAINT [PK_OperatorDrivers] PRIMARY KEY([TenantId],[Cpf]));
+ """);
  startup.Step="check-global";if(!await db.Users.AnyAsync(x=>x.Role=="global")){
  startup.Step="seed-credentials";var email=cfg["SeedAdmin:Email"]?.Trim().ToLowerInvariant();var pass=cfg["SeedAdmin:Password"];
  if(string.IsNullOrWhiteSpace(email)||string.IsNullOrWhiteSpace(pass)||pass.Length<12)throw new InvalidOperationException("Global bootstrap credentials missing or password too short");
@@ -119,7 +127,7 @@ api.MapPost("/register-driver",async(DriverInput x,MozDb db,IPasswordHasher<User
  var cpf=Engine.Digits(x.Cpf);var phone=Engine.Digits(x.Phone);
  if(!Engine.ValidCpf(cpf)||phone.Length is <10 or >13||x.Name.Trim().Length<3||x.Password.Length<10||x.Password.Length>128)return Results.BadRequest(new{error="Confira nome, CPF, celular e senha de pelo menos 10 caracteres."});
  if(await db.Users.AnyAsync(u=>u.Cpf==cpf))return Results.Conflict(new{error="Cadastro existente. Acesse sua conta."});
- var u=new User{Role="driver",Login=cpf,Cpf=cpf,Phone=phone,Name=x.Name.Trim(),IdentityVerified=false};u.PasswordHash=hasher.HashPassword(u,x.Password);db.Users.Add(u);await db.SaveChangesAsync();return Results.Ok(new{message="Cadastro recebido. A identidade deve ser verificada pelo operador antes da liberação da viagem."});
+ var u=new User{Role="driver",Login=cpf,Cpf=cpf,Phone=phone,Name=x.Name.Trim(),IdentityVerified=false};u.PasswordHash=hasher.HashPassword(u,x.Password);db.Users.Add(u);await db.SaveChangesAsync();return Results.Ok(new{message="Cadastro recebido. A identidade deve ser conferida pela administração do MOZ antes da liberação da viagem."});
 }).RequireRateLimiting("auth");
 api.MapPost("/logout",(HttpContext c)=>{c.Response.Cookies.Delete("moz_session",new CookieOptions{Path="/",Secure=true,SameSite=SameSiteMode.Strict});return Results.Ok();});
 var auth=api.MapGroup("").RequireAuthorization();
