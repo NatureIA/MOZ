@@ -219,18 +219,18 @@ public static class Api {
  var path=Path.Combine(storage,podId.ToString("N"));try{await using(var fs=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None)){await fs.WriteAsync(data);await fs.FlushAsync();}}catch(IOException){return Results.Conflict(new{error="Documento já está sendo processado."});}
  db.Pods.Add(doc);db.Events.Add(Engine.Event(t,verified&&s.CargoRole=="destination"?"Entrega comprovada":"Comprovante recebido",verified?(s.CargoRole=="destination"?"Comprovante de entrega recebido com localização compatível":"Comprovante armazenado com localização compatível"):"Comprovante armazenado; localização não verificada","Motorista",captured,actor:u.Id,stage:s));
  if(s.FinishOnPod&&verified){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,captured);}
- else if(s.Departed!=null){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,s.Departed.Value>captured?s.Departed.Value:captured);}
+ else if(s.Departed!=null&&(s.CargoRole!="destination"||verified)){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,s.Departed.Value>captured?s.Departed.Value:captured);}
  try{await db.SaveChangesAsync();}catch{File.Delete(path);throw;}try{await MozRealtime.Publish(hub,t);}catch{}return Results.Ok(new{status=t.Status,id=doc.Id});
  });
  api.MapGet("/pods/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var p=await db.Pods.SingleOrDefaultAsync(x=>x.Id==id);if(p==null||!await Visible(db,u).AnyAsync(x=>x.Id==p.TripId))return Results.NotFound();
  var path=Path.Combine(storage,p.Id.ToString("N"));return File.Exists(path)?Results.File(path,"application/octet-stream",p.FileName):Results.NotFound();
  });
- api.MapGet("/notices",async(HttpContext c,MozDb db)=>{
+ api.MapGet("/notices",async(HttpContext c,MozDb db,int? page)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=from e in db.Events join t in Visible(db,u) on e.TripId equals t.Id select new{e,t.Code,TripReference=t.Container};
  var unread=await q.CountAsync(x=>!db.Reads.Any(r=>r.UserId==u.Id&&r.EventId==x.e.Id));
- var recent=await q.OrderByDescending(x=>x.e.Recorded).Take(100).Select(x=>new{x.e.Id,x.e.TripId,x.e.Kind,x.e.Message,x.e.At,x.Code,x.TripReference,Read=db.Reads.Any(r=>r.UserId==u.Id&&r.EventId==x.e.Id)}).ToListAsync();
- return Results.Ok(new{unread,items=recent});
+ var total=await q.CountAsync();var recent=await q.OrderByDescending(x=>x.e.Recorded).ThenByDescending(x=>x.e.Id).Skip(Math.Clamp(page??0,0,100000)*100).Take(100).Select(x=>new{x.e.Id,x.e.TripId,x.e.Kind,x.e.Message,x.e.At,x.Code,x.TripReference,Read=db.Reads.Any(r=>r.UserId==u.Id&&r.EventId==x.e.Id)}).ToListAsync();
+ return Results.Ok(new{unread,total,items=recent});
  });
  api.MapPost("/notices/{id:guid}/read",async(Guid id,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await db.Events.AnyAsync(x=>x.Id==id&&Visible(db,u).Any(t=>t.Id==x.TripId)))return Results.NotFound();if(!await db.Reads.AnyAsync(r=>r.UserId==u.Id&&r.EventId==id))db.Reads.Add(new ReadNotice{UserId=u.Id,EventId=id});return await Save(db);});
  api.MapGet("/reports/trips.csv",async(HttpContext c,MozDb db,DateTimeOffset? from,DateTimeOffset? to)=>{
