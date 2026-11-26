@@ -19,7 +19,7 @@ public sealed class PushKeys(string folder,IConfiguration cfg){
  public record KeyPair(string PublicKey,string PrivateKey);
 }
 public static class PushEndpoints{
- static async Task<User?> UserFor(HttpContext c,MozDb db){if(!Guid.TryParse(c.User.FindFirstValue("sub"),out var id))return null;var u=await db.Users.SingleOrDefaultAsync(x=>x.Id==id&&x.Active);if(u?.TenantId is {} tid&&!await db.Tenants.AnyAsync(x=>x.Id==tid&&x.Active))return null;return u;}
+ static async Task<User?> UserFor(HttpContext c,MozDb db){if(!Guid.TryParse(c.User.FindFirstValue("sub"),out var id))return null;var u=await db.Users.SingleOrDefaultAsync(x=>x.Id==id&&x.Active);if(u!=null&&u.Role is not ("global" or "operator" or "client" or "driver"))return null;if(u?.TenantId is {} tid&&!await db.Tenants.AnyAsync(x=>x.Id==tid&&x.Active))return null;return u;}
  public static bool SafeEndpoint(string? value){if(value==null||value.Length>2000||!Uri.TryCreate(value,UriKind.Absolute,out var u)||u.Scheme!="https"||u.Port!=443||u.UserInfo.Length!=0||!string.IsNullOrEmpty(u.Fragment))return false;var h=u.IdnHost.ToLowerInvariant();return h=="fcm.googleapis.com"||h=="updates.push.services.mozilla.com"||h=="web.push.apple.com"||h.EndsWith(".push.apple.com")||h.EndsWith(".notify.windows.com");}
  static bool SafeKey(string? value,int len){if(string.IsNullOrWhiteSpace(value)||value.Length>200)return false;try{var s=value.Replace('-','+').Replace('_','/');s=s.PadRight((s.Length+3)/4*4,'=');return Convert.FromBase64String(s).Length==len;}catch{return false;}}
  public static void MapPushEndpoints(this RouteGroupBuilder api){
@@ -47,8 +47,8 @@ public class PushWorker(IServiceScopeFactory scopes,PushKeys keys,StartupState s
  foreach(var d in devices){
  if(ct.IsCancellationRequested)break;
  var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==d.UserId&&x.Active,ct);
- if(u==null||!PushEndpoints.SafeEndpoint(d.Endpoint)||(u.TenantId is {} tenant&&!await db.Tenants.AnyAsync(t=>t.Id==tenant&&t.Active,ct))){db.PushDevices.Remove(d);continue;}
- var trips=u.Role switch{"operator" or "observer" when u.TenantId.HasValue=>db.Trips.Where(t=>t.TenantId==u.TenantId),"client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),"driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),_=>db.Trips.Where(t=>false)};
+ if(u==null||u.Role is not ("global" or "operator" or "client" or "driver")||!PushEndpoints.SafeEndpoint(d.Endpoint)||(u.TenantId is {} tenant&&!await db.Tenants.AnyAsync(t=>t.Id==tenant&&t.Active,ct))){db.PushDevices.Remove(d);continue;}
+ var trips=u.Role switch{"operator"=>db.Trips.Where(t=>t.TenantId==u.TenantId),"client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),"driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),_=>db.Trips.Where(t=>false)};
  var cursor=d.Cursor;var q=from e in db.Events join t in trips on e.TripId equals t.Id where e.Recorded>cursor&&e.Recorded<=now select e;
  var kinds=(d.Kinds??"").Split('|',StringSplitOptions.RemoveEmptyEntries);
  if(kinds.Length>0)q=q.Where(e=>kinds.Contains(e.Kind));
