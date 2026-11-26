@@ -40,7 +40,7 @@ jobs:
       - name: Install map library
         shell: pwsh
         run: |
-          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7
+          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7 jsdom@26.1.0
           New-Item -ItemType Directory -Force wwwroot/vendor | Out-Null
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.js wwwroot/vendor/
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.css wwwroot/vendor/
@@ -51,6 +51,7 @@ jobs:
           node --check wwwroot/app.js
           node --check wwwroot/maps.js
           node --check wwwroot/service-worker.js
+          node tests/live-refresh.test.cjs
           node -e "JSON.parse(require('fs').readFileSync('wwwroot/manifest.webmanifest','utf8'))"
       - name: Restore
         run: dotnet restore MOZ.csproj
@@ -105,9 +106,9 @@ jobs:
           for ($i=1; $i -le 18; $i++) {
             try {
               $h=Invoke-RestMethod -Uri "https://moz.runasp.net/health" -TimeoutSec 15
-              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.2.7") { exit 0 }
+              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.2.8") { exit 0 }
               Write-Host "Health status=$($h.status) database=$($h.database) version=$($h.version) step=$($h.databaseStep) type=$($h.databaseErrorType) sql=$($h.databaseErrorNumber)"
-              if ($h.app -eq "MOZ" -and $h.version -eq "0.2.7" -and $h.status -eq "error") { break }
+              if ($h.app -eq "MOZ" -and $h.version -eq "0.2.8" -and $h.status -eq "error") { break }
             } catch {
               $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "none" }
               Write-Host "Health HTTP=$code attempt=$i type=$($_.Exception.GetType().Name)"

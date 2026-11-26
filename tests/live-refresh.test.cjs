@@ -1,0 +1,23 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const {JSDOM}=require('jsdom');
+const dom=new JSDOM('<div id="tripRows"><div class="table-scroll"><table><tbody><tr data-trip-row="a"><td>10 km</td><td><button data-trip="a">Abrir</button></td></tr></tbody></table></div></div><div id="fleetMap"></div>',{runScripts:'outside-only'});
+const w=dom.window,doc=w.document,app=fs.readFileSync('wwwroot/app.js','utf8');
+const start=app.indexOf('function changeHtml('),end=app.indexOf('async function trips(',start);
+assert.ok(start>=0&&end>start);
+w.eval(app.slice(start,end));
+const container=doc.getElementById('tripRows'),wrapper=container.firstElementChild,row=container.querySelector('tr'),button=row.querySelector('button');button.focus();wrapper.scrollLeft=35;
+w.patchTripRows(container,'<div class="table-scroll"><table><tbody><tr data-trip-row="a"><td>12 km</td><td><button data-trip="a">Abrir</button></td></tr><tr data-trip-row="b"><td>0 km</td><td><button data-trip="b">Abrir</button></td></tr></tbody></table></div>');
+assert.equal(container.firstElementChild,wrapper);assert.equal(container.querySelector('tr'),row);assert.equal(row.cells[0].textContent,'12 km');assert.equal(doc.activeElement,button);assert.equal(wrapper.scrollLeft,35);assert.equal(container.querySelectorAll('tr').length,2);
+let instances=0,updates=0,removed=0,fits=0,lastMap=null;
+class FakeMap{constructor(){instances++;lastMap=this;this.handlers={};this.sources={};}addControl(){}on(event,...args){if(args.length===1)this.handlers[event]=args[0];}fitBounds(){fits++;}getSource(id){return this.sources[id];}addSource(id,source){this.sources[id]={data:source.data,setData(data){this.data=data;updates++;}};}addLayer(){}remove(){removed++;}}
+w.maplibregl={Map:FakeMap,NavigationControl:class{},LngLatBounds:class{extend(){}}};
+w.eval(fs.readFileSync('wwwroot/maps.js','utf8'));
+const a={id:'a',code:'MOZ-A',lastLat:-27.8,lastLon:-50.3,status:'Em trânsito'};
+w.MozMaps.fleet('fleetMap',[a]);lastMap.handlers.load();
+w.MozMaps.fleet('fleetMap',[a]);assert.equal(updates,0);
+w.MozMaps.fleet('fleetMap',[{...a,lastLon:-50.2}]);assert.equal(instances,1);assert.equal(removed,0);assert.equal(fits,1);assert.equal(updates,1);assert.equal(lastMap.getSource('vehicles').data.features[0].geometry.coordinates[0],-50.2);
+w.MozMaps.clear();assert.equal(removed,1);
+dom.window.close();
+console.log('Live update: stable row, focus, scroll, map and camera.');
