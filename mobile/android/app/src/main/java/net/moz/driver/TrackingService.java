@@ -11,15 +11,15 @@ public class TrackingService extends Service implements LocationListener {
  void status(String message){if(!closing)getSystemService(NotificationManager.class).notify(101,notification(message));}
  boolean renew()throws Exception{JSONObject me=request("/me",null);if(!owner.equals(me.optString("id"))||!"driver".equals(me.optString("role"))||!me.optBoolean("identityVerified"))throw new SecurityException("Conta diferente ou não autorizada");JSONObject auth=request("/driver/tracking",null);String next=auth.optString("trackingSince","");if(!trip.equals(auth.optString("tripId",""))||!epoch.equals(next)||!auth.optBoolean("offlineAllowed"))return false;remember(this,owner,trip,epoch);verified=true;return true;}
  @Override public int onStartCommand(Intent i,int flags,int startId){
- if(i==null||"STOP".equals(i.getAction())){if(i!=null&&epoch!=null){blockedEpoch=epoch;forget(this);}stopSelf();return START_NOT_STICKY;}
+ if(i==null||"STOP".equals(i.getAction())){if(i!=null&&epoch!=null){blockedEpoch=epoch;authorization(this).edit().putString("blockedEpoch",epoch).commit();forget(this);}stopSelf();return START_NOT_STICKY;}
  String t=i.getStringExtra("trip"),o=i.getStringExtra("owner"),expected=i.getStringExtra("epoch");if(expected==null||expected.equals(blockedEpoch)){stopSelf();return START_NOT_STICKY;}
  try{UUID.fromString(t);UUID.fromString(o);Instant.parse(expected);}catch(Exception e){stopSelf();return START_NOT_STICKY;}
  if(trip!=null)return START_NOT_STICKY;
  trip=t;owner=o;epoch=expected;if(Build.VERSION.SDK_INT>=29)startForeground(101,notification("Verificando viagem…"),ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);else startForeground(101,notification("Verificando viagem…"));
  if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED){stopSelf();return START_NOT_STICKY;}
  io.execute(()->{try{boolean allowed;try{allowed=renew();}catch(SecurityException denied){throw denied;}catch(IOException offline){allowed=previouslyAuthorized(this,owner,trip,epoch);}
- if(!allowed){stopSelf();return;}verified=true;
- if(!db.hasFinish(owner,trip))guard.post(this::beginGps);else status("Encerramento local · aguardando sincronização");
+ if(!allowed){verified=false;haltGps();if(!db.hasPending(owner,trip)){forget(this);stopSelf();return;}}else verified=true;
+ if(allowed&&!db.hasFinish(owner,trip))guard.post(this::beginGps);else status("Encerramento local · aguardando sincronização");
  io.scheduleWithFixedDelay(this::flush,0,5,TimeUnit.SECONDS);
  }catch(Exception e){status("Não foi possível validar a viagem.");stopSelf();}});return START_NOT_STICKY;}
  void beginGps(){if(!verified||closing||collecting)return;try{manager.requestLocationUpdates(LocationManager.GPS_PROVIDER,5000,0,this,Looper.getMainLooper());collecting=true;status("GPS ativo durante a viagem. Pode bloquear a tela.");}catch(SecurityException|IllegalArgumentException e){status("Permissão ou provedor GPS indisponível.");stopSelf();}}
@@ -35,7 +35,7 @@ public class TrackingService extends Service implements LocationListener {
  static void field(OutputStream os,String boundary,String key,String value)throws IOException{os.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\""+key+"\"\r\n\r\n"+value+"\r\n").getBytes(StandardCharsets.UTF_8));}
  JSONObject upload(PodItem p)throws Exception{HttpURLConnection c=connect("/trips/"+trip+"/pod");String boundary="moz"+UUID.randomUUID().toString().replace("-","");try{c.setRequestMethod("POST");c.setDoOutput(true);c.setChunkedStreamingMode(65536);c.setRequestProperty("Content-Type","multipart/form-data; boundary="+boundary);try(OutputStream os=c.getOutputStream()){field(os,boundary,"id",p.id);field(os,boundary,"captured",p.captured);field(os,boundary,"stageId",p.stage);os.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"comprovante\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));try(InputStream in=new FileInputStream(p.path)){byte[] buf=new byte[65536];int n;while((n=in.read(buf))!=-1)os.write(buf,0,n);}os.write(("\r\n--"+boundary+"--\r\n").getBytes(StandardCharsets.UTF_8));}return response(c);}finally{c.disconnect();}}
  void flush(){if(closing)return;try{
- boolean allowed=renew();if(!allowed){verified=false;haltGps();forget(this);}
+ boolean allowed=renew();if(!allowed){verified=false;haltGps();}
  if(db.hasFinish(owner,trip))haltGps();
  // Wait for writes already handed to the durable queue, then replay GPS before each photo.
  disk.submit(()->{}).get();
@@ -45,7 +45,7 @@ public class TrackingService extends Service implements LocationListener {
  if(p!=null){try{JSONObject r=upload(p);String s=r.optString("status");if(p.finish&&!"Finalizada".equals(s)){db.review(p.id,"Comprovante recebido; encerramento pendente de validação.");haltGps();}else{db.removePod(p);if("Finalizada".equals(s)||"Cancelada".equals(s)){allowed=false;verified=false;haltGps();forget(this);}}}catch(HttpFailure ex){if(ex.code==400||ex.code==404){db.review(p.id,"Comprovante preservado; servidor requer conferência.");if(p.finish)haltGps();}else throw ex;}continue;}
  break;
  }
- if(!allowed){status("Viagem encerrada ou cancelada.");stopSelf();return;}
+ if(!allowed){forget(this);status("Viagem encerrada ou cancelada.");stopSelf();return;}
  if(db.hasFinish(owner,trip))status("Encerramento local · sincronização ou conferência pendente");else status("GPS ativo · dados sincronizados quando houver internet");
  }catch(SecurityException e){verified=false;forget(this);haltGps();status("Acesso revogado. GPS interrompido.");stopSelf();}catch(Exception e){status(db.hasFinish(owner,trip)?"Encerrada no aparelho · aguardando conexão":"Sem internet · GPS e dados armazenados no aparelho");}}
  @Override public void onDestroy(){closing=true;running=false;verified=false;collecting=false;guard.removeCallbacksAndMessages(null);if(manager!=null)try{manager.removeUpdates(this);}catch(Exception ignored){}if(io!=null)io.shutdown();if(disk!=null)disk.shutdown();stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
@@ -61,6 +61,7 @@ public class TrackingService extends Service implements LocationListener {
  void delete(String id,String owner,String trip){getWritableDatabase().delete("fixes","id=? AND owner=? AND trip=?",new String[]{id,owner,trip});}
  void addPod(String id,String owner,String trip,String stage,String captured,String path,boolean finish){ContentValues v=new ContentValues();v.put("id",id);v.put("owner",owner);v.put("trip",trip);v.put("stage",stage);v.put("captured",captured);v.put("path",path);v.put("finish",finish?1:0);v.put("state","pending");getWritableDatabase().insertOrThrow("pods",null,v);}
  PodItem nextPod(String owner,String trip){try(Cursor c=getReadableDatabase().query("pods",new String[]{"id","captured","stage","path","finish"},"owner=? AND trip=? AND state='pending'",new String[]{owner,trip},null,null,"captured","1")){return c.moveToFirst()?new PodItem(c):null;}}
+ boolean hasPending(String owner,String trip){try(Cursor c=getReadableDatabase().rawQuery("SELECT 1 FROM pods WHERE owner=? AND trip=? AND state='pending' LIMIT 1",new String[]{owner,trip})){return c.moveToFirst();}}
  boolean hasFinish(String owner,String trip){try(Cursor c=getReadableDatabase().rawQuery("SELECT 1 FROM pods WHERE owner=? AND trip=? AND finish=1 LIMIT 1",new String[]{owner,trip})){return c.moveToFirst();}}
  JSONArray pending(String owner,String trip)throws JSONException{JSONArray a=new JSONArray();try(Cursor c=getReadableDatabase().query("pods",new String[]{"id","captured","stage","finish","state","message"},"owner=? AND trip=?",new String[]{owner,trip},null,null,"captured")){while(c.moveToNext()){JSONObject p=new JSONObject();p.put("id",c.getString(0));p.put("captured",c.getString(1));p.put("stageId",c.getString(2));p.put("finish",c.getInt(3)!=0);p.put("state",c.getString(4));p.put("message",c.getString(5));a.put(p);}}return a;}
  void review(String id,String message){ContentValues v=new ContentValues();v.put("state","review");v.put("message",message);getWritableDatabase().update("pods",v,"id=?",new String[]{id});}
