@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 namespace Moz;
 public static class Api {
  public static object PublicUser(User u)=>new{u.Id,u.Name,u.Role,u.TenantId,u.ClientId,u.IdentityVerified};
@@ -16,9 +17,23 @@ public static class Api {
  }
  static IQueryable<Trip> Visible(MozDb db,User u)=>u.Role switch{
  "operator"=>db.Trips.Where(t=>t.TenantId==u.TenantId),
- "client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),
+ "client" when u.TenantId!=null&&u.ClientId!=null=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),
  "driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),
  _=>db.Trips.Where(t=>false)};
+ static string? NormalizeCnpj(string? value){
+ if(string.IsNullOrWhiteSpace(value)||value.Length>32)return null;
+ var c=System.Text.RegularExpressions.Regex.Replace(value.Trim().ToUpperInvariant(),@"[\s./-]","");
+ if(!System.Text.RegularExpressions.Regex.IsMatch(c,@"\A[0-9A-Z]{12}[0-9]{2}\z")||c.All(ch=>ch==c[0]))return null;
+ int Digit(int length){int sum=0,weight=2;for(int i=length-1;i>=0;i--){sum+=(c[i]-'0')*weight;if(++weight>9)weight=2;}int rem=sum%11;return rem<2?0:11-rem;}
+ return Digit(12)==c[12]-'0'&&Digit(13)==c[13]-'0'?c:null;
+ }
+ static readonly JsonSerializerOptions TripJson=new(JsonSerializerDefaults.Web);
+ static JsonObject TripView(Trip t,User u,Client? client=null){
+ var view=JsonSerializer.SerializeToNode(t,TripJson)!.AsObject();
+ if(u.Role=="operator"){view["clientName"]=client?.Name;view["clientCnpj"]=client?.Cnpj;}
+ else{view.Remove("clientId");}
+ return view;
+ }
  static bool Operator(User? u)=>u?.Role=="operator"&&u.TenantId!=null;
  static IResult Bad(string s)=>Results.BadRequest(new{error=s});
  static bool TextOk(string? s,int max=160)=>!string.IsNullOrWhiteSpace(s)&&s.Length<=max;
@@ -45,9 +60,28 @@ public static class Api {
  });
  api.MapGet("/catalog",async(HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();var id=u!.TenantId;
- return Results.Ok(new{clients=await db.Clients.Where(x=>x.TenantId==id).ToListAsync(),registry=await db.Registry.Where(x=>x.TenantId==id).ToListAsync(),places=await db.Places.Where(x=>x.TenantId==id).ToListAsync(),users=await db.Users.Where(x=>x.TenantId==id).Select(x=>new{x.Id,x.Name,x.Login,x.Role,x.ClientId,x.Active}).ToListAsync()});
+ return Results.Ok(new{clients=await db.Clients.Where(x=>x.TenantId==id).ToListAsync(),drivers=await db.OperatorDrivers.Where(x=>x.TenantId==id).OrderBy(x=>x.Name).Select(x=>new{x.Cpf,x.Name}).ToListAsync(),registry=await db.Registry.Where(x=>x.TenantId==id).ToListAsync(),places=await db.Places.Where(x=>x.TenantId==id).ToListAsync(),users=await db.Users.Where(x=>x.TenantId==id).Select(x=>new{x.Id,x.Name,x.Login,x.Role,x.ClientId,x.Active}).ToListAsync()});
  });
- api.MapPost("/clients",async(NameInput x,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(!Operator(u))return Results.Forbid();if(!TextOk(x.Name))return Bad("Nome obrigatório.");var cl=new Client{TenantId=u!.TenantId!.Value,Name=x.Name.Trim()};db.Clients.Add(cl);Record(db,u,"Criar cliente",cl.Id.ToString());return await Save(db);});
+ api.MapPost("/clients",async(ClientInput x,HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
+ var cnpj=NormalizeCnpj(x.Cnpj);if(!TextOk(x.Name)||cnpj==null)return Bad("Informe a razão social e um CNPJ válido.");
+ var tenant=u!.TenantId!.Value;if(await db.Clients.AnyAsync(z=>z.TenantId==tenant&&z.Cnpj==cnpj))return Results.Conflict(new{error="CNPJ já cadastrado neste operador."});
+ var cl=new Client{TenantId=tenant,Name=x.Name.Trim(),Cnpj=cnpj};db.Clients.Add(cl);Record(db,u,"Criar cliente",cl.Id.ToString());return await Save(db);
+ });
+ api.MapPost("/clients/{id:guid}/cnpj",async(Guid id,CnpjInput x,HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
+ var cl=await db.Clients.SingleOrDefaultAsync(z=>z.Id==id&&z.TenantId==u!.TenantId);if(cl==null)return Results.NotFound();
+ if(cl.Cnpj!=null)return Bad("Este cliente já possui CNPJ. Não é permitido alterar sua identidade por este cadastro.");
+ var cnpj=NormalizeCnpj(x.Cnpj);if(cnpj==null)return Bad("Informe um CNPJ válido.");
+ if(await db.Clients.AnyAsync(z=>z.TenantId==cl.TenantId&&z.Cnpj==cnpj&&z.Id!=cl.Id))return Results.Conflict(new{error="CNPJ já cadastrado neste operador."});
+ cl.Cnpj=cnpj;Record(db,u!,"Completar CNPJ do cliente",cl.Id.ToString());return await Save(db);
+ });
+ api.MapPost("/operator-drivers",async(OperatorDriverInput x,HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
+ var cpf=Engine.Digits(x.Cpf??"");if(!Engine.ValidCpf(cpf)||!TextOk(x.Name))return Bad("Informe o nome e um CPF válido.");
+ var tenant=u!.TenantId!.Value;if(await db.OperatorDrivers.AnyAsync(z=>z.TenantId==tenant&&z.Cpf==cpf))return Results.Conflict(new{error="Motorista já cadastrado neste operador."});
+ db.OperatorDrivers.Add(new OperatorDriver{TenantId=tenant,Cpf=cpf,Name=x.Name.Trim()});Record(db,u,"Cadastrar motorista na base do operador",cpf);return await Save(db);
+ });
  api.MapPost("/users",async(UserInput x,HttpContext c,MozDb db,IPasswordHasher<User> hasher)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();if(!TextOk(x.Name)||!TextOk(x.Email,256)||!x.Email.Contains('@')||!PasswordOk(x.Password)||x.Role is not ("operator" or "client"))return Bad("Dados inválidos.");
  if(x.Role=="client"&&!await db.Clients.AnyAsync(z=>z.Id==x.ClientId&&z.TenantId==u!.TenantId))return Bad("Cliente inválido.");
@@ -60,9 +94,13 @@ public static class Api {
  if(x.ParentId!=null&&!await db.Places.AnyAsync(z=>z.Id==x.ParentId&&z.TenantId==u!.TenantId))return Bad("Estabelecimento principal inválido.");
  var p=new Place{TenantId=u!.TenantId!.Value,Name=x.Name,Address=x.Address,Lat=x.Lat,Lon=x.Lon,Radius=x.Radius,Polygon=x.Polygon,ParentId=x.ParentId};db.Places.Add(p);Record(db,u,"Criar cerca",p.Id.ToString());return await Save(db);
  });
- api.MapGet("/trips",async(HttpContext c,MozDb db,int? page)=>{
+ api.MapGet("/trips",async(HttpContext c,MozDb db,int? page,Guid? clientId)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=Visible(db,u);var n=Math.Clamp(page??0,0,10000);
- return Results.Ok(new{total=await q.CountAsync(),items=await q.OrderByDescending(x=>x.Created).Skip(n*100).Take(100).ToListAsync()});
+ if(clientId.HasValue){if(!Operator(u))return Results.Forbid();if(!await db.Clients.AnyAsync(z=>z.Id==clientId.Value&&z.TenantId==u.TenantId))return Bad("Cliente inválido.");q=q.Where(t=>t.ClientId==clientId.Value);}
+ var total=await q.CountAsync();var items=await q.OrderByDescending(x=>x.Created).Skip(n*100).Take(100).ToListAsync();
+ var ids=items.Select(t=>t.ClientId).Distinct().ToArray();
+ var clients=Operator(u)?await db.Clients.Where(z=>z.TenantId==u.TenantId&&ids.Contains(z.Id)).ToDictionaryAsync(z=>z.Id):new Dictionary<Guid,Client>();
+ return Results.Ok(new{total,items=items.Select(t=>TripView(t,u,clients.GetValueOrDefault(t.ClientId))).ToArray()});
  });
  api.MapPost("/trips",async(TripInput x,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();
@@ -71,7 +109,9 @@ public static class Api {
  var tenant=await db.Tenants.FindAsync(u!.TenantId!.Value);if(tenant==null)return Results.Forbid();
  if(tenant.TripLimit>0&&await db.Trips.CountAsync(z=>z.TenantId==tenant.Id&&z.Finished==null)>=tenant.TripLimit)return Bad("Limite de viagens ativas atingido.");
  var driver=await db.Users.SingleOrDefaultAsync(z=>z.Cpf==cpf&&z.Role=="driver"&&z.IdentityVerified&&z.Active);
- var t=new Trip{TenantId=tenant.Id,ClientId=x.ClientId,DriverCpf=cpf,DriverId=driver?.Id,DriverName=driver?.Name??"",Carrier=x.Carrier??"",Tractor=x.Tractor??"",Trailer=x.Trailer??"",Container=x.Container??"",Scheduled=x.Scheduled,SpeedLimit=x.SpeedLimit,MaxAccuracy=x.MaxAccuracy,StopSeconds=x.StopSeconds,GapSeconds=x.GapSeconds,Code="MOZ-"+Guid.NewGuid().ToString("N").ToUpperInvariant()};
+ var localDriver=await db.OperatorDrivers.SingleOrDefaultAsync(z=>z.TenantId==tenant.Id&&z.Cpf==cpf);
+ if(!string.IsNullOrWhiteSpace(x.DriverName)&&!TextOk(x.DriverName))return Bad("Nome do motorista inválido.");
+ var t=new Trip{TenantId=tenant.Id,ClientId=x.ClientId,DriverCpf=cpf,DriverId=driver?.Id,DriverName=driver?.Name??localDriver?.Name??x.DriverName?.Trim()??"",Carrier=x.Carrier??"",Tractor=x.Tractor??"",Trailer=x.Trailer??"",Container=x.Container??"",Scheduled=x.Scheduled,SpeedLimit=x.SpeedLimit,MaxAccuracy=x.MaxAccuracy,StopSeconds=x.StopSeconds,GapSeconds=x.GapSeconds,Code="MOZ-"+Guid.NewGuid().ToString("N").ToUpperInvariant()};
  if(!string.IsNullOrWhiteSpace(x.PlannedRoute)&&(!Engine.ValidRoute(x.PlannedRoute)||x.RouteTolerance is <30 or >10000))return Bad("Rota planejada ou tolerância inválida.");
  var stages=new List<Stage>();
  for(int i=0;i<x.Stages.Length;i++){var s=x.Stages[i];var p=await db.Places.SingleOrDefaultAsync(z=>z.Id==s.PlaceId&&z.TenantId==tenant.Id);if(p==null||!TextOk(s.Label)||s.SlaMinutes<0||s.FinishOnPod&&!s.RequirePod)return Bad("Etapa inválida.");
@@ -80,7 +120,8 @@ public static class Api {
  });
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();
- return Results.Ok(new{trip=t,plan=await db.Plans.SingleOrDefaultAsync(x=>x.TripId==id),stages=await db.Stages.Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(),events=await db.Events.Where(x=>x.TripId==id).OrderBy(x=>x.At).Take(10000).ToListAsync(),pods=await db.Pods.Where(x=>x.TripId==id).ToListAsync()});
+ var client=Operator(u)?await db.Clients.SingleOrDefaultAsync(z=>z.Id==t.ClientId&&z.TenantId==u.TenantId):null;
+ return Results.Ok(new{trip=TripView(t,u,client),plan=await db.Plans.SingleOrDefaultAsync(x=>x.TripId==id),stages=await db.Stages.Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(),events=await db.Events.Where(x=>x.TripId==id).OrderBy(x=>x.At).Take(10000).ToListAsync(),pods=await db.Pods.Where(x=>x.TripId==id).ToListAsync()});
  });
  api.MapGet("/trips/{id:guid}/fixes",async(Guid id,HttpContext c,MozDb db,int? page)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await Visible(db,u).AnyAsync(x=>x.Id==id))return Results.NotFound();
@@ -172,10 +213,13 @@ public record TenantInput(string Name,string AdminName,string Email,string Passw
 public record ActiveInput(bool Active);
 public record VerifyInput(string Evidence);
 public record NameInput(string Name);
+public record ClientInput(string Name,string? Cnpj);
+public record CnpjInput(string? Cnpj);
+public record OperatorDriverInput(string Name,string? Cpf);
 public record UserInput(string Name,string Email,string Password,string Role,Guid? ClientId);
 public record RegistryInput(string Kind,string Name,string Reference);
 public record PlaceInput(string Name,string Address,double Lat,double Lon,double Radius,string? Polygon,Guid? ParentId);
 public record StageInput(Guid PlaceId,string Label,string? Kind,bool RequirePod,bool FinishOnPod,int SlaMinutes);
-public record TripInput(Guid ClientId,string DriverCpf,string? Carrier,string? Tractor,string? Trailer,string? Container,DateTimeOffset Scheduled,double SpeedLimit,double MaxAccuracy,int StopSeconds,int GapSeconds,StageInput[] Stages,string? PlannedRoute=null,double RouteTolerance=200);
+public record TripInput(Guid ClientId,string DriverCpf,string? Carrier,string? Tractor,string? Trailer,string? Container,DateTimeOffset Scheduled,double SpeedLimit,double MaxAccuracy,int StopSeconds,int GapSeconds,StageInput[] Stages,string? PlannedRoute=null,double RouteTolerance=200,string? DriverName=null);
 public record ActionInput(string Action,string? Message);
 public record FixInput(Guid Id,DateTimeOffset At,double Lat,double Lon,double Accuracy,double? Speed);
