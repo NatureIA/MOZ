@@ -1,0 +1,8 @@
+bin/
+obj/
+publish/
+.env
+*.user
+appsettings.Production.json
+*.pfx
+*.keystore

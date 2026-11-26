@@ -1,0 +1,55 @@
+name: MOZ - validate and deploy
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: moz-production
+  cancel-in-progress: false
+jobs:
+  build_test_deploy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Validate frontend
+        run: |
+          node --check wwwroot/app.js
+          node --check wwwroot/service-worker.js
+          node -e "JSON.parse(require('fs').readFileSync('wwwroot/manifest.webmanifest','utf8'))"
+      - name: Restore
+        run: dotnet restore MOZ.csproj
+      - name: Build
+        run: dotnet build MOZ.csproj --configuration Release --no-restore
+      - name: Run rules
+        run: dotnet run --project tests/Moz.Rules.csproj --configuration Release
+      - name: Publish
+        run: dotnet publish MOZ.csproj --configuration Release --output ./publish --runtime win-x86 --self-contained false
+      - name: Save package
+        uses: actions/upload-artifact@v4
+        with:
+          name: moz-production-${{ github.sha }}
+          path: ./publish
+          retention-days: 14
+      - name: WebDeploy
+        uses: rasmusbuchholdt/simply-web-deploy@2.1.0
+        with:
+          website-name: ${{ secrets.WEBSITE_NAME }}
+          server-computer-name: ${{ secrets.SERVER_COMPUTER_NAME }}
+          server-username: ${{ secrets.SERVER_USERNAME }}
+          server-password: ${{ secrets.SERVER_PASSWORD }}
+      - name: Production health
+        shell: pwsh
+        run: |
+          for ($i=1; $i -le 18; $i++) {
+            try {
+              $h=Invoke-RestMethod -Uri "https://moz.runasp.net/health" -TimeoutSec 15
+              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.1.0") { exit 0 }
+            } catch { Write-Host "Health check unavailable ($i)." }
+            Start-Sleep -Seconds 5
+          }
+          throw "MOZ production health check failed."
