@@ -6,6 +6,11 @@ public static class Engine {
  var reference=value?.Trim();return string.IsNullOrEmpty(reference)||reference.Length>160||reference.Any(char.IsControl)?null:reference;
  }
  public static bool SameTripReference(string? existing,string reference)=>!string.IsNullOrWhiteSpace(existing)&&string.Equals(existing.Trim(),reference.Trim(),StringComparison.OrdinalIgnoreCase);
+ public static bool ValidCargoRoles(IEnumerable<string?> values){
+ var roles=values.ToArray();
+ if(roles.Any(r=>r!=null&&r!=""&&r!="origin"&&r!="destination"))return false;
+ return roles.Count(r=>r=="origin")==1&&roles.Count(r=>r=="destination")==1&&Array.IndexOf(roles,"origin")<Array.IndexOf(roles,"destination");
+ }
  public static bool ValidCpf(string x) {
  if(x.Length!=11||x.Distinct().Count()==1) return false;
  for(int n=9;n<=10;n++){int s=0;for(int i=0;i<n;i++)s+=(x[i]-'0')*(n+1-i);int d=11-s%11;if(d>=10)d=0;if(x[n]-'0'!=d)return false;}return true;
@@ -50,8 +55,8 @@ public static class Engine {
  if(stage==null)return;
  bool inside=Contains(f.Lat,f.Lon,stage.Lat,stage.Lon,stage.Radius,stage.Polygon);
  bool outside=!Contains(f.Lat,f.Lon,stage.Lat,stage.Lon,stage.Radius,stage.Polygon,Math.Max(15,f.Accuracy));
- if(stage.Arrived==null){if(inside){stage.FirstInside??=f.At;stage.InsideCount++;if(stage.InsideCount>=2){stage.Arrived=stage.FirstInside;t.Status="No local: "+stage.Label;db.Events.Add(Event(t,"Chegada","Chegada à etapa "+stage.Label,"GPS",stage.Arrived,stage:stage));}}else{stage.InsideCount=0;stage.FirstInside=null;}return;}
- if(outside){stage.FirstOutside??=f.At;stage.OutsideCount++;if(stage.OutsideCount>=2&&stage.Departed==null){stage.Departed=stage.FirstOutside;db.Events.Add(Event(t,"Saída","Saída da etapa "+stage.Label,"GPS",stage.Departed,stage:stage));if(stage.RequirePod&&!db.Pods.Any(p=>p.StageId==stage.Id)){t.Status="Aguardando comprovante";}else Advance(t,stage,count,db,stage.Departed.Value);}}
+ if(stage.Arrived==null){if(inside){stage.FirstInside??=f.At;stage.InsideCount++;if(stage.InsideCount>=2){stage.Arrived=stage.FirstInside;t.Status="No local: "+stage.Label;db.Events.Add(Event(t,"Chegada","Chegada à etapa "+stage.Label+" ("+stage.Kind+")","GPS",stage.Arrived,stage:stage));}}else{stage.InsideCount=0;stage.FirstInside=null;}return;}
+ if(outside){stage.FirstOutside??=f.At;stage.OutsideCount++;if(stage.OutsideCount>=2&&stage.Departed==null){stage.Departed=stage.FirstOutside;db.Events.Add(Event(t,"Saída","Saída da etapa "+stage.Label+" ("+stage.Kind+")","GPS",stage.Departed,stage:stage));if(stage.RequirePod&&!db.Pods.Any(p=>p.StageId==stage.Id&&(stage.CargoRole!="destination"||p.LocationVerified))){t.Status="Aguardando comprovante";}else Advance(t,stage,count,db,stage.Departed.Value);}}
  else{stage.OutsideCount=0;stage.FirstOutside=null;}
  }
 }
