@@ -130,6 +130,12 @@ final class DriverModel: NSObject, ObservableObject, CLLocationManagerDelegate {
             grant = newGrant.offlineAllowed && newGrant.tripId != nil ? newGrant : nil
             // Persist positive authorization only after the server confirms it.
             try persist(); updatePending(); reconcileGPS()
+            if let id = grant?.tripId, details[id]?.trip.trackingSince != grant?.trackingSince {
+                if let d: TripDetail = try? await api.request("/trips/\(id)") {
+                    guard generation == token, user?.id == owner else { return }
+                    details[id] = d; if let i = trips.firstIndex(where: { $0.id == id }) { trips[i] = d.trip } else { trips.insert(d.trip, at: 0) }; try persist()
+                }
+            }
             await flush()
             guard generation == token, user?.id == owner else { return }
             if active {
@@ -152,7 +158,7 @@ final class DriverModel: NSObject, ObservableObject, CLLocationManagerDelegate {
                 try persist()
             }
             lastSync = Date()
-            message = collecting ? "GPS ativo · sincronização automática." : "Dados atualizados."
+            message = collecting ? "GPS ativo · sincronização automática." : pending.contains(where: { $0.finish }) ? "Encerramento local · aguardando confirmação." : "Dados atualizados."
         } catch { if generation == token { handle(error) } }
     }
     func loadDetail(_ id: String) async {
@@ -229,7 +235,7 @@ final class DriverModel: NSObject, ObservableObject, CLLocationManagerDelegate {
         let token = generation
         do {
             // A background time allowance permits in-flight synchronization, not an unlimited background execution promise.
-            let task = UIApplication.shared.beginBackgroundTask(withName: "MOZ synchronization")
+            let task = UIApplication.shared.beginBackgroundTask(withName: "MOZ synchronization", expirationHandler: nil)
             defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
             let entries = try store.entries(owner: owner).filter { $0.review == nil }
             var index = 0
