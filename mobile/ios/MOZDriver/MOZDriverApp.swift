@@ -25,8 +25,8 @@ struct RootView: View {
                 if model.user == nil || model.sessionExpired { SignInView() }
                 else if model.user?.identityVerified == false {
                     VStack(spacing: 20) {
-                        Text("Cadastro aguardando conferência").font(.title2.bold())
-                        Text("Suas viagens serão disponibilizadas após a validação da identidade.")
+                        Text("Atualize sua sessão").font(.title2.bold())
+                        Text("Sua sessão precisa ser atualizada para consultar as viagens disponíveis.")
                         Button("Atualizar cadastro") { Task { await model.refresh() } }.buttonStyle(.borderedProminent)
                         Button("Sair") { Task { await model.logout() } }
                     }.padding()

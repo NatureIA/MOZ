@@ -91,7 +91,7 @@ final class DriverModel: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard !busy else { return false }; busy = true; defer { busy = false }
         do {
             let _: EmptyResponse = try await api.post("/register-driver", ["name": name, "cpf": cpf, "phone": phone, "password": password])
-            message = "Cadastro recebido. Aguarde a conferência da identidade e acesse sua conta."; return true
+            message = "Conta criada e liberada automaticamente. Acesse com seu CPF e senha."; return true
         } catch { message = error.localizedDescription; return false }
     }
     func logout() async {

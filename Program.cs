@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.17",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.18",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
@@ -117,6 +117,13 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  IF COL_LENGTH(N'dbo.Stages',N'CargoRole') IS NULL
  ALTER TABLE [dbo].[Stages] ADD [CargoRole] nvarchar(max) NULL;
  """);
+ startup.Step="link-self-registered-drivers";
+ // Preserve legacy identity attestations. Link only open, unassigned demands.
+ var pending=await (from t in db.Trips where t.Status=="Programada"&&t.Finished==null&&t.DriverId==null
+ join d in db.Users.Where(d=>d.Role=="driver"&&d.Active) on t.DriverCpf equals d.Cpf
+ select new{Trip=t,Driver=d}).ToListAsync();
+ foreach(var item in pending){item.Trip.DriverId=item.Driver.Id;item.Trip.DriverName=item.Driver.Name;db.Events.Add(Engine.Event(item.Trip,"Motorista vinculado","Conta do motorista disponível por autocadastro; titularidade não verificada automaticamente","Sistema"));}
+ if(pending.Count>0)await db.SaveChangesAsync();
  startup.Step="check-global";if(!await db.Users.AnyAsync(x=>x.Role=="global")){
  startup.Step="seed-credentials";var email=cfg["SeedAdmin:Email"]?.Trim().ToLowerInvariant();var pass=cfg["SeedAdmin:Password"];
  if(string.IsNullOrWhiteSpace(email)||string.IsNullOrWhiteSpace(pass)||pass.Length<12)throw new InvalidOperationException("Global bootstrap credentials missing or password too short");
@@ -137,11 +144,31 @@ api.MapPost("/login",async(LoginInput input,MozDb db,IPasswordHasher<User> hashe
  c.Response.Cookies.Append("moz_session",new JwtSecurityTokenHandler().WriteToken(token),new CookieOptions{HttpOnly=true,Secure=true,SameSite=SameSiteMode.Strict,MaxAge=TimeSpan.FromHours(12),Path="/"});
  return Results.Ok(Api.PublicUser(u));
 }).RequireRateLimiting("auth");
-api.MapPost("/register-driver",async(DriverInput x,MozDb db,IPasswordHasher<User> hasher)=>{
- var cpf=Engine.Digits(x.Cpf);var phone=Engine.Digits(x.Phone);
- if(!Engine.ValidCpf(cpf)||phone.Length is <10 or >13||x.Name.Trim().Length<3||x.Password.Length<10||x.Password.Length>128)return Results.BadRequest(new{error="Confira nome, CPF, celular e senha de pelo menos 10 caracteres."});
- if(await db.Users.AnyAsync(u=>u.Cpf==cpf))return Results.Conflict(new{error="Cadastro existente. Acesse sua conta."});
- var u=new User{Role="driver",Login=cpf,Cpf=cpf,Phone=phone,Name=x.Name.Trim(),IdentityVerified=false};u.PasswordHash=hasher.HashPassword(u,x.Password);db.Users.Add(u);await db.SaveChangesAsync();return Results.Ok(new{message="Cadastro recebido. A identidade deve ser conferida pela administração do MOZ antes da liberação da viagem."});
+api.MapPost("/driver-account",async(DriverLookup x,MozDb db)=>{
+ var cpf=Engine.Digits(x.Cpf??"");
+ if(!Engine.ValidCpf(cpf))return Results.BadRequest(new{error="CPF inválido. Confira os números informados."});
+ // No name, phone, status or other account information is returned.
+ return Results.Ok(new{exists=await db.Users.AnyAsync(u=>u.Cpf==cpf)});
+}).RequireRateLimiting("auth");
+api.MapPost("/register-driver",async(DriverInput x,MozDb db,IPasswordHasher<User> hasher,IHubContext<MozHub> hub)=>{
+ var cpf=Engine.Digits(x.Cpf??"");var phone=Engine.Digits(x.Phone??"");var name=x.Name?.Trim()??"";
+ if(!Engine.ValidCpf(cpf))return Results.BadRequest(new{error="CPF inválido. Confira os números informados."});
+ if(phone.Length is <10 or >13)return Results.BadRequest(new{error="Informe um celular válido com DDD."});
+ if(name.Length is <3 or >160)return Results.BadRequest(new{error="Informe o nome completo (3 a 160 caracteres)."});
+ if(x.Password==null||x.Password.Length is <10 or >128)return Results.BadRequest(new{error="A senha deve ter de 10 a 128 caracteres."});
+ await using var transaction=await db.Database.BeginTransactionAsync();
+ try{await DriverAccounts.LockCpf(db,cpf);}catch(Microsoft.Data.SqlClient.SqlException ex)when(ex.Number==51002){return Results.Conflict(new{error="Cadastro em processamento. Tente novamente."});}
+ if(await db.Users.AnyAsync(u=>u.Cpf==cpf))return Results.Conflict(new{error="CPF já cadastrado. Entre com sua senha existente."});
+ // Operational access is automatic; do not claim documentary identity verification.
+ var u=new User{Role="driver",Login=cpf,Cpf=cpf,Phone=phone,Name=name,IdentityVerified=false};
+ u.PasswordHash=hasher.HashPassword(u,x.Password);db.Users.Add(u);
+ var trips=await db.Trips.Where(t=>t.DriverCpf==cpf&&t.DriverId==null&&t.Status=="Programada"&&t.Finished==null).ToListAsync();
+ foreach(var t in trips){t.DriverId=u.Id;t.DriverName=u.Name;db.Events.Add(Engine.Event(t,"Motorista vinculado","Motorista liberado por autocadastro; titularidade não verificada automaticamente","Sistema"));}
+ db.Audits.Add(new Audit{ActorId=u.Id,Action="Autocadastro de motorista; acesso operacional automático sem conferência documental",Target=u.Id.ToString()});
+ try{await db.SaveChangesAsync();await transaction.CommitAsync();}
+ catch(DbUpdateException){return Results.Conflict(new{error="Cadastro em conflito. Se o CPF já estiver cadastrado, entre com a senha existente."});}
+ foreach(var t in trips){try{await MozRealtime.Publish(hub,t);}catch{}}
+ return Results.Ok(new{message="Conta criada. Você já pode acessar suas viagens.",approved=true});
 }).RequireRateLimiting("auth");
 api.MapPost("/logout",(HttpContext c)=>{c.Response.Cookies.Delete("moz_session",new CookieOptions{Path="/",Secure=true,SameSite=SameSiteMode.Strict});return Results.Ok();});
 var auth=api.MapGroup("").RequireAuthorization();
@@ -150,6 +177,13 @@ app.MapHub<MozHub>("/hubs/events").RequireAuthorization();
 app.Run();
 public record LoginInput(string Login,string Password);
 public record DriverInput(string Name,string Cpf,string Phone,string Password);
+public record DriverLookup(string Cpf);
+public static class DriverAccounts{
+ public static Task<int> LockCpf(MozDb db,string cpf){
+ var resource="MOZ:DriverCpf:"+cpf;
+ return db.Database.ExecuteSqlInterpolatedAsync($"DECLARE @r int; EXEC @r = sys.sp_getapplock @Resource={resource}, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000; IF @r < 0 THROW 51002, 'Driver registration lock unavailable.', 1;");
+ }
+}
 public class MozHub(MozDb db):Hub {
  public override async Task OnConnectedAsync(){
  if(!Guid.TryParse(Context.User?.FindFirstValue("sub"),out var id)){Context.Abort();return;}
@@ -157,7 +191,7 @@ public class MozHub(MozDb db):Hub {
  if(u==null||u.Role is not ("global" or "operator" or "client" or "driver")||(u.TenantId is {} tid&&!await db.Tenants.AnyAsync(t=>t.Id==tid&&t.Active))){Context.Abort();return;}
  if(u.Role=="operator"&&u.TenantId is {} tenant)await Groups.AddToGroupAsync(Context.ConnectionId,"operator:"+tenant);
  else if(u.Role=="client"&&u.ClientId is {} client&&u.TenantId is {} ct)await Groups.AddToGroupAsync(Context.ConnectionId,"client:"+ct+":"+client);
- else if(u.Role=="driver"&&u.IdentityVerified)await Groups.AddToGroupAsync(Context.ConnectionId,"driver:"+u.Id);
+ else if(u.Role=="driver")await Groups.AddToGroupAsync(Context.ConnectionId,"driver:"+u.Id);
  await base.OnConnectedAsync();
  }
 }

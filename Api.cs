@@ -8,7 +8,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 namespace Moz;
 public static class Api {
- public static object PublicUser(User u)=>new{u.Id,u.Name,u.Role,u.TenantId,u.ClientId,u.IdentityVerified};
+ // identityVerified is retained as a legacy operational-access alias for existing mobile builds.
+ public static object PublicUser(User u)=>new{u.Id,u.Name,u.Role,u.TenantId,u.ClientId,IdentityVerified=u.Role=="driver"?u.Active:u.IdentityVerified,DriverEnabled=u.Role=="driver"&&u.Active,IdentityDocumentVerified=u.IdentityVerified};
  static Guid Actor(HttpContext c)=>Guid.TryParse(c.User.FindFirstValue("sub"),out var id)?id:Guid.Empty;
  static async Task<User?> Current(HttpContext c,MozDb db){
  var u=await db.Users.SingleOrDefaultAsync(x=>x.Id==Actor(c)&&x.Active);
@@ -18,7 +19,7 @@ public static class Api {
  static IQueryable<Trip> Visible(MozDb db,User u)=>u.Role switch{
  "operator"=>db.Trips.Where(t=>t.TenantId==u.TenantId),
  "client" when u.TenantId!=null&&u.ClientId!=null=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),
- "driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),
+ "driver"=>db.Trips.Where(t=>t.DriverId==u.Id),
  _=>db.Trips.Where(t=>false)};
  static string? NormalizeCnpj(string? value){
  if(string.IsNullOrWhiteSpace(value)||value.Length>32)return null;
@@ -50,14 +51,9 @@ public static class Api {
  var tenant=new Tenant{Name=x.Name.Trim(),Plan=x.Plan??"",TripLimit=x.TripLimit};var admin=new User{Role="operator",TenantId=tenant.Id,Name=x.AdminName.Trim(),Login=x.Email.Trim().ToLowerInvariant(),IdentityVerified=true};admin.PasswordHash=hasher.HashPassword(admin,x.Password);db.Tenants.Add(tenant);db.Users.Add(admin);Record(db,u,"Criar operador",tenant.Id.ToString());return await Save(db);
  });
  api.MapPost("/tenants/{id:guid}/active",async(Guid id,ActiveInput x,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u?.Role!="global")return Results.Forbid();var t=await db.Tenants.FindAsync(id);if(t==null)return Results.NotFound();t.Active=x.Active;Record(db,u,"Alterar acesso do operador",id.ToString());return await Save(db);});
- api.MapGet("/drivers/pending",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u?.Role!="global")return Results.Forbid();return Results.Ok(await db.Users.Where(x=>x.Role=="driver"&&!x.IdentityVerified).Select(x=>new{x.Id,x.Name,x.Cpf,x.Phone}).ToListAsync());});
- api.MapPost("/drivers/{id:guid}/verify",async(Guid id,VerifyInput x,HttpContext c,MozDb db)=>{
- var u=await Current(c,db);if(u?.Role!="global")return Results.Forbid();
- if(!TextOk(x.Evidence,500))return Bad("Informe a referência da conferência documental externa de identidade.");
- var d=await db.Users.SingleOrDefaultAsync(x=>x.Id==id&&x.Role=="driver"&&x.Active);if(d==null)return Results.NotFound();
- d.IdentityVerified=true;var trips=await db.Trips.Where(t=>t.DriverCpf==d.Cpf&&t.DriverId==null&&t.Status=="Programada").ToListAsync();foreach(var t in trips){t.DriverId=d.Id;t.DriverName=d.Name;db.Events.Add(Engine.Event(t,"Motorista vinculado","Identidade conferida; demanda liberada","Sistema"));}
- Record(db,u,"Verificação de identidade: "+x.Evidence,id.ToString());return await Save(db);
- });
+ // Legacy endpoints no longer allow manual approval.
+ api.MapGet("/drivers/pending",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u?.Role!="global")return Results.Forbid();return Results.Ok(Array.Empty<object>());});
+ api.MapPost("/drivers/{id:guid}/verify",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u?.Role!="global")return Results.Forbid();return Results.Json(new{error="A aprovação manual foi substituída pela liberação automática no cadastro."},statusCode:410);});
  api.MapGet("/catalog",async(HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();var id=u!.TenantId;
  return Results.Ok(new{clients=await db.Clients.Where(x=>x.TenantId==id).ToListAsync(),drivers=await db.OperatorDrivers.Where(x=>x.TenantId==id).OrderBy(x=>x.Name).Select(x=>new{x.Cpf,x.Name}).ToListAsync(),registry=await db.Registry.Where(x=>x.TenantId==id).ToListAsync(),places=await db.Places.Where(x=>x.TenantId==id).ToListAsync(),users=await db.Users.Where(x=>x.TenantId==id).Select(x=>new{x.Id,x.Name,x.Login,x.Role,x.ClientId,x.Active}).ToListAsync()});
@@ -143,7 +139,7 @@ public static class Api {
  var tenant=await db.Tenants.FindAsync(u!.TenantId!.Value);if(tenant==null)return Results.Forbid();
  var reference=Engine.NormalizeTripReference(x.TripReference??x.Container);
  if(reference==null)return Bad("Informe o código da viagem (até 160 caracteres).");
- var driver=await db.Users.SingleOrDefaultAsync(z=>z.Cpf==cpf&&z.Role=="driver"&&z.IdentityVerified&&z.Active);
+ var driver=await db.Users.SingleOrDefaultAsync(z=>z.Cpf==cpf&&z.Role=="driver"&&z.Active);
  var localDriver=await db.OperatorDrivers.SingleOrDefaultAsync(z=>z.TenantId==tenant.Id&&z.Cpf==cpf);
  if(!string.IsNullOrWhiteSpace(x.DriverName)&&!TextOk(x.DriverName))return Bad("Nome do motorista inválido.");
  var t=new Trip{TenantId=tenant.Id,ClientId=x.ClientId,DriverCpf=cpf,DriverId=driver?.Id,DriverName=driver?.Name??localDriver?.Name??x.DriverName?.Trim()??"",Carrier=x.Carrier??"",Tractor=x.Tractor??"",Trailer=x.Trailer??"",Container=reference,Scheduled=x.Scheduled,SpeedLimit=x.SpeedLimit,MaxAccuracy=x.MaxAccuracy,StopSeconds=x.StopSeconds,GapSeconds=x.GapSeconds,Code="MOZ-"+Guid.NewGuid().ToString("N").ToUpperInvariant()};
@@ -158,13 +154,17 @@ public static class Api {
  var lockResource="MOZ:TripReference:"+tenant.Id.ToString("N");
  try{await db.Database.ExecuteSqlInterpolatedAsync($"DECLARE @lockResult int; EXEC @lockResult = sys.sp_getapplock @Resource={lockResource}, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000; IF @lockResult < 0 THROW 51001, 'Trip reference lock unavailable.', 1;");}
  catch(Microsoft.Data.SqlClient.SqlException ex)when(ex.Number==51001){return Results.Conflict(new{error="Outra viagem está sendo programada. Tente novamente."});}
+ // Serialize registration and assignment for the same CPF.
+ try{await DriverAccounts.LockCpf(db,cpf);}catch(Microsoft.Data.SqlClient.SqlException ex)when(ex.Number==51002){return Results.Conflict(new{error="Cadastro do motorista em processamento. Tente novamente."});}
+ driver=await db.Users.AsNoTracking().SingleOrDefaultAsync(z=>z.Cpf==cpf&&z.Role=="driver"&&z.Active);
+ t.DriverId=driver?.Id;t.DriverName=driver?.Name??localDriver?.Name??x.DriverName?.Trim()??"";
  var open=await db.Trips.AsNoTracking().Where(z=>z.TenantId==tenant.Id&&z.Finished==null).Select(z=>z.Container).ToListAsync();
  if(open.Any(z=>Engine.SameTripReference(z,reference)))return Results.Conflict(new{error="Já existe uma viagem aberta com este código. Conclua ou cancele a anterior para reutilizá-lo."});
  if(tenant.TripLimit>0&&open.Count>=tenant.TripLimit)return Bad("Limite de viagens ativas atingido.");
- db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, motorista pendente de verificação":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){await transaction.CommitAsync();try{await MozRealtime.Publish(hub,t);}catch{}}return result;
+ db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, aguardando cadastro do motorista":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){await transaction.CommitAsync();try{await MozRealtime.Publish(hub,t);}catch{}}return result;
  });
  api.MapGet("/driver/tracking",async(HttpContext c,MozDb db)=>{
- var u=await Current(c,db);if(u?.Role!="driver"||!u.IdentityVerified)return Results.Forbid();
+ var u=await Current(c,db);if(u?.Role!="driver")return Results.Forbid();
  var t=await db.Trips.AsNoTracking().Where(z=>z.DriverId==u.Id&&z.TrackingSince!=null&&z.Finished==null&&z.Status!="Finalizada"&&z.Status!="Cancelada"&&db.Tenants.Any(a=>a.Id==z.TenantId&&a.Active)).Select(z=>new{z.Id,z.TrackingSince}).SingleOrDefaultAsync();
  return Results.Ok(new{tripId=t?.Id,trackingSince=t?.TrackingSince,offlineAllowed=t!=null,leaseSeconds=15});
  });
@@ -207,7 +207,7 @@ public static class Api {
  var s=await CurrentStage(db,t);
  if(x.Action=="activate"&&Operator(u)){
  if(Engine.TrackingActive(t))return Results.Ok();
- if(t.DriverId==null||!await db.Users.AnyAsync(d=>d.Id==t.DriverId&&d.Role=="driver"&&d.Active&&d.IdentityVerified))return Bad("O motorista precisa ter uma conta com identidade conferida antes da ativação.");
+ if(t.DriverId==null||!await db.Users.AnyAsync(d=>d.Id==t.DriverId&&d.Role=="driver"&&d.Active))return Bad("O motorista precisa ter uma conta ativa no MOZ antes da ativação.");
  if(await db.Trips.AnyAsync(z=>z.Id!=id&&z.DriverCpf==t.DriverCpf&&z.TrackingSince!=null&&z.Finished==null))return Results.Conflict(new{error="O motorista já possui uma viagem ativa."});
  var now=DateTimeOffset.UtcNow;bool first=t.Started==null;t.TrackingSince=now;
  if(first){t.Started=now;t.Status="Em operação";}
