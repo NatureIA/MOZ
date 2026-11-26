@@ -54,6 +54,8 @@ jobs:
           node --check wwwroot/maps.js
           node --check wwwroot/service-worker.js
           node tests/live-refresh.test.cjs
+          node tests/push.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Web Push service worker test failed" }
           node tests/road-match.test.mjs
           node tests/road-tiles.test.mjs
           if ($LASTEXITCODE -ne 0) { throw "Road tile integration failed" }
