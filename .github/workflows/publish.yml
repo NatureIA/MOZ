@@ -35,13 +35,28 @@ jobs:
           name: moz-production-${{ github.sha }}
           path: ./publish
           retention-days: 14
-      - name: WebDeploy
-        uses: rasmusbuchholdt/simply-web-deploy@2.1.0
-        with:
-          website-name: ${{ secrets.WEBSITE_NAME }}
-          server-computer-name: ${{ secrets.SERVER_COMPUTER_NAME }}
-          server-username: ${{ secrets.SERVER_USERNAME }}
-          server-password: ${{ secrets.SERVER_PASSWORD }}
+      - name: WebDeploy direct
+        shell: pwsh
+        env:
+          DEPLOY_SITE: ${{ secrets.WEBSITE_NAME }}
+          DEPLOY_SERVER: ${{ secrets.SERVER_COMPUTER_NAME }}
+          DEPLOY_USER: ${{ secrets.SERVER_USERNAME }}
+          DEPLOY_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $site = $env:DEPLOY_SITE.Trim()
+          $server = $env:DEPLOY_SERVER.Trim()
+          if ($site -ne "site111488" -or $env:DEPLOY_USER.Trim() -ne $site) { throw "Site or login does not match MOZ." }
+          if ($server -notmatch '^https://') { $server = "https://" + $server }
+          $uri = [Uri]$server
+          if ($uri.Host -ne "site111488.siteasp.net" -or $uri.Port -ne 8172 -or $uri.Scheme -ne "https") { throw "Unexpected MOZ WebDeploy server." }
+          $endpoint = $uri.GetLeftPart([UriPartial]::Authority) + "/msdeploy.axd?site=" + $site
+          $exe = Join-Path ${env:ProgramFiles(x86)} "IIS\Microsoft Web Deploy V3\msdeploy.exe"
+          if (!(Test-Path $exe)) { throw "MSDeploy executable not found." }
+          $src = (Resolve-Path ./publish).Path
+          $dest = "-dest:contentPath='$site',computerName='$endpoint',userName='$($env:DEPLOY_USER)',password='$($env:DEPLOY_PASSWORD)',authType=Basic,includeAcls=False"
+          & $exe "-verb:sync" "-source:contentPath='$src'" $dest "-enableRule:AppOffline" "-enableRule:DoNotDeleteRule" "-disableLink:AppPoolExtension" "-disableLink:ContentExtension" "-disableLink:CertificateExtension" "-retryAttempts:2"
+          if ($LASTEXITCODE -ne 0) { throw "Direct WebDeploy failed (exit $LASTEXITCODE)." }
       - name: Production health
         shell: pwsh
         run: |
