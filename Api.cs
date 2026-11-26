@@ -137,11 +137,19 @@ public static class Api {
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();
  var client=Operator(u)?await db.Clients.SingleOrDefaultAsync(z=>z.Id==t.ClientId&&z.TenantId==u.TenantId):null;
- return Results.Ok(new{trip=TripView(t,u,client),plan=await db.Plans.SingleOrDefaultAsync(x=>x.TripId==id),stages=await db.Stages.Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(),events=await db.Events.Where(x=>x.TripId==id).OrderBy(x=>x.At).Take(10000).ToListAsync(),pods=await db.Pods.Where(x=>x.TripId==id).ToListAsync()});
+ return Results.Ok(new{trip=TripView(t,u,client),roadMatchingEnabled=RoadTrace.Configured(cfg),plan=await db.Plans.SingleOrDefaultAsync(x=>x.TripId==id),stages=await db.Stages.Where(x=>x.TripId==id).OrderBy(x=>x.Order).ToListAsync(),events=await db.Events.Where(x=>x.TripId==id).OrderBy(x=>x.At).Take(10000).ToListAsync(),pods=await db.Pods.Where(x=>x.TripId==id).ToListAsync()});
  });
  api.MapGet("/trips/{id:guid}/fixes",async(Guid id,HttpContext c,MozDb db,int? page)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await Visible(db,u).AnyAsync(x=>x.Id==id))return Results.NotFound();
  return Results.Ok(await db.Fixes.Where(x=>x.TripId==id&&x.Accepted).OrderBy(x=>x.At).Skip(Math.Clamp(page??0,0,100000)*1000).Take(1000).Select(x=>new{x.At,x.Lat,x.Lon,x.Accuracy,x.Speed,x.TrackingSince}).ToListAsync());
+ });
+ api.MapGet("/trips/{id:guid}/road-trace",async(Guid id,int? page,HttpContext c,MozDb db,RoadTrace matcher)=>{
+ var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(u.Role is not("operator" or "client"))return Results.Forbid();
+ var t=await Visible(db,u).AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id,c.RequestAborted);if(t==null)return Results.NotFound();
+ if(!RoadTrace.Configured(cfg))return Results.Ok(new{enabled=false,lines=Array.Empty<double[][]>(),hasMore=false});
+ var n=Math.Clamp(page??0,0,100000);var pts=await db.Fixes.AsNoTracking().Where(f=>f.TripId==id&&f.Accepted).OrderBy(f=>f.At).ThenBy(f=>f.Id).Skip(n*79).Take(81).ToListAsync(c.RequestAborted);
+ var lines=await matcher.Match(pts.Take(80).ToList(),t.GapSeconds,c.RequestAborted);
+ return Results.Ok(new{enabled=true,lines,hasMore=pts.Count>80});
  });
  api.MapGet("/trips/{id:guid}/audit",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(u.Role is not("operator" or "client"))return Results.Forbid();
