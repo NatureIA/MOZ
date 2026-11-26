@@ -36,3 +36,39 @@ button.fleet-plate:hover,button.fleet-plate:focus-visible{background:#44368d;col
 /* Activation is immediately visible in the tracking status cell and detail header. */
 .trip-state-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:148px;max-width:220px}.operation-table button.activate-trip,.detail-top button.activate-trip{background:#5546bd;color:white;border:1px solid #5546bd;border-radius:7px;font-size:11px;font-weight:750;letter-spacing:.025em;min-height:32px;padding:7px 10px;white-space:nowrap}.operation-table button.activate-trip:hover,.detail-top button.activate-trip:hover{background:#40329f;border-color:#40329f}.detail-top button.activate-trip{font-size:13px;min-height:38px;padding:9px 15px}
 @media(max-width:650px){.detail-top button.activate-trip,.operation-table button.activate-trip{min-height:44px}}
+
+/* Recolhimento local do menu: mantém o contexto e o mapa montados. */
+@media screen{
+.workspace{grid-template-columns:212px minmax(0,1fr)}
+.workspace.sidebar-collapsed{grid-template-columns:64px minmax(0,1fr)}
+.workspace>.side{background:#e9edf6;border-right:1px solid #d7deeb;padding:16px 10px;color:#35435e;min-width:0}
+.sidebar-heading{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:0 0 18px;min-height:38px}
+.sidebar-heading .side-label{display:block;padding:0 0 0 8px;color:#5c6984;letter-spacing:.09em}
+#sidebarToggle{display:grid;place-items:center;flex:0 0 36px;width:36px;height:36px;padding:0;background:#f8f9fd;border:1px solid #cdd5e6;color:#495675;border-radius:9px;cursor:pointer}
+#sidebarToggle:hover{background:#fff;color:#5140b7;border-color:#b8addf}
+.sidebar-icon{width:21px;height:21px;flex:0 0 21px}
+.side .nav{display:flex;flex-direction:column;gap:5px;overflow:visible}
+.side .nav button{display:flex;align-items:center;gap:10px;min-height:44px;min-width:0;width:100%;text-align:left;white-space:normal;padding:9px 10px;border:0;border-radius:9px;color:#455471;font-weight:600}
+.side .nav button:hover{background:#f6f7fc;color:#44368d}
+.side .nav button.active{background:#dcd7f6;color:#4735a0;box-shadow:inset 3px 0 #6551c8;border:0}
+.side .nav-group-label{display:block;color:#64718b;padding:10px 8px 4px;font-size:10px}
+.nav-text{min-width:0;line-height:1.3}
+.sidebar-collapsed>.side{padding:16px 8px}
+.sidebar-collapsed .sidebar-heading{justify-content:center}
+.sidebar-collapsed .sidebar-heading .side-label,.sidebar-collapsed .nav-text,.sidebar-collapsed .nav-group-label{display:none}
+.sidebar-collapsed #sidebarToggle .sidebar-chevron{transform:rotate(180deg);transform-origin:14.5px 12px}
+.sidebar-collapsed .side .nav button{justify-content:center;padding:10px 0}
+.sidebar-collapsed .side .nav button.active{box-shadow:inset 3px 0 #6551c8}
+@media(max-width:900px){
+.workspace{grid-template-columns:1fr}
+.workspace.sidebar-collapsed{grid-template-columns:52px minmax(0,1fr)}
+.workspace>.side{position:static;height:auto;padding:8px 12px;border-right:0;border-bottom:1px solid #d7deeb}
+.workspace:not(.sidebar-collapsed) .sidebar-heading{margin-bottom:6px}
+.workspace:not(.sidebar-collapsed) .side .nav{flex-direction:row;overflow:auto}
+.workspace:not(.sidebar-collapsed) .side .nav button{width:auto;flex:none;white-space:nowrap}
+.workspace:not(.sidebar-collapsed) .side .nav-group-label{display:none}
+.workspace.sidebar-collapsed>.side{position:sticky;top:var(--header);height:calc(100dvh - var(--header));padding:8px 4px;border-bottom:0;border-right:1px solid #d7deeb;overflow:auto}
+.sidebar-collapsed .side .nav button{min-height:44px}
+.sidebar-collapsed .main-area{padding-left:8px;padding-right:8px}
+}
+}
