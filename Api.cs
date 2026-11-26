@@ -94,6 +94,18 @@ public static class Api {
  if(x.ParentId!=null&&!await db.Places.AnyAsync(z=>z.Id==x.ParentId&&z.TenantId==u!.TenantId))return Bad("Estabelecimento principal inválido.");
  var p=new Place{TenantId=u!.TenantId!.Value,Name=x.Name,Address=x.Address,Lat=x.Lat,Lon=x.Lon,Radius=x.Radius,Polygon=x.Polygon,ParentId=x.ParentId};db.Places.Add(p);Record(db,u,"Criar cerca",p.Id.ToString());return await Save(db);
  });
+ api.MapGet("/control-tower",async(HttpContext c,MozDb db)=>{
+ var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(u.Role is not("operator" or "client"))return Results.Forbid();
+ var q=Visible(db,u).AsNoTracking();var now=DateTimeOffset.UtcNow;
+ var counts=await q.GroupBy(t=>t.Status).Select(g=>new{status=g.Key,count=g.Count()}).ToListAsync(c.RequestAborted);
+ var active=await q.Where(t=>t.TrackingSince!=null&&t.Finished==null&&t.Status!="Finalizada"&&t.Status!="Cancelada")
+ .Select(t=>new{t.Id,t.Code,tripReference=t.Container,t.Tractor,t.Status,t.LastFix,t.LastLat,t.LastLon,t.TrackingSince,t.GapSeconds}).ToListAsync(c.RequestAborted);
+ var states=active.Select(t=>new{t.Id,t.Code,t.tripReference,t.Tractor,t.Status,t.LastFix,t.LastLat,t.LastLon,
+ hasPosition=t.LastFix.HasValue&&t.LastFix>=t.TrackingSince&&t.LastLat.HasValue&&t.LastLon.HasValue&&Engine.ValidPoint(t.LastLat.Value,t.LastLon.Value),
+ stale=(now-(t.LastFix.HasValue&&t.LastFix>=t.TrackingSince?t.LastFix.Value:t.TrackingSince!.Value)).TotalSeconds>t.GapSeconds}).ToList();
+ var vehicles=states.Where(t=>t.hasPosition).ToList();
+ return Results.Ok(new{total=counts.Sum(x=>x.count),scheduled=counts.Where(x=>x.status=="Programada").Sum(x=>x.count),active=states.Count,finalized=counts.Where(x=>x.status=="Finalizada").Sum(x=>x.count),cancelled=counts.Where(x=>x.status=="Cancelada").Sum(x=>x.count),stale=states.Count(t=>t.stale),withoutPosition=states.Count(t=>!t.hasPosition),vehicles,asOf=now});
+ });
  api.MapGet("/trips",async(HttpContext c,MozDb db,int? page,Guid? clientId)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=Visible(db,u);var n=Math.Clamp(page??0,0,10000);
  if(clientId.HasValue){if(!Operator(u))return Results.Forbid();if(!await db.Clients.AnyAsync(z=>z.Id==clientId.Value&&z.TenantId==u.TenantId))return Bad("Cliente inválido.");q=q.Where(t=>t.ClientId==clientId.Value);}
