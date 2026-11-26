@@ -30,6 +30,9 @@ struct DriverStage: Codable, Identifiable {
     let label: String
     let kind: String
     let address: String
+    let cargoRole: String?
+    let lat: Double?
+    let lon: Double?
     let arrived: String?
     let departed: String?
     let workStart: String?
