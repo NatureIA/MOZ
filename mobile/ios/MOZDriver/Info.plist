@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDevelopmentRegion</key><string>pt_BR</string>
+<key>CFBundleDisplayName</key><string>MOZ Driver</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+<key>LSRequiresIPhoneOS</key><true/>
+<key>UILaunchScreen</key><dict/>
+<key>NSLocationWhenInUseUsageDescription</key><string>O MOZ registra a localização somente durante uma viagem atribuída e ativada pelo operador.</string>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Permita registrar a viagem ativa mesmo com a tela bloqueada, inclusive em regiões sem internet. A coleta termina com o encerramento local ou confirmação de cancelamento.</string>
+<key>NSCameraUsageDescription</key><string>Fotografar os comprovantes das etapas da viagem.</string>
+<key>NSPhotoLibraryUsageDescription</key><string>Selecionar um comprovante para a etapa da viagem.</string>
+<key>UIBackgroundModes</key><array><string>location</string><string>fetch</string></array>
+<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>net.moz.driver.refresh</string></array>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+</dict></plist>
