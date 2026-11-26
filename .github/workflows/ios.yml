@@ -1,0 +1,33 @@
+name: MOZ Driver iOS - build
+on:
+  push:
+    branches: [main]
+    paths: ['mobile/ios/**', '.github/workflows/ios.yml']
+  pull_request:
+    paths: ['mobile/ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          command -v xcodegen || brew install xcodegen
+          cd mobile/ios
+          xcodegen generate
+      - name: Compile for physical iPhone (unsigned)
+        run: xcodebuild -project mobile/ios/MOZDriver.xcodeproj -scheme MOZDriver -configuration Debug -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -derivedDataPath build/ios-device build
+      - name: Compile and test on iOS simulator
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in reversed(list(d.items())) if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
+          xcodebuild -project mobile/ios/MOZDriver.xcodeproj -scheme MOZDriver -configuration Debug -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build/ios-simulator CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO test
+      - name: Preserve unsigned compiled app
+        run: ditto -c -k --keepParent build/ios-device/Build/Products/Debug-iphoneos/MOZDriver.app MOZDriver-unsigned.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moz-driver-ios-unsigned
+          path: MOZDriver-unsigned.zip
+          retention-days: 14
