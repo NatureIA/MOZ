@@ -1,6 +1,6 @@
 'use strict';
 window.MozMaps=(()=>{let maps=[],interacting=0;const fleetViews=new Map(),routeViews=new Map();
-const clean=()=>{for(const m of maps){try{m.remove()}catch{}}maps=[];interacting=0;fleetViews.clear();routeViews.clear()};
+const clean=()=>{for(const state of fleetViews.values())for(const entry of state.plateMarkers.values())entry.marker.remove();for(const m of maps){try{m.remove()}catch{}}maps=[];interacting=0;fleetViews.clear();routeViews.clear()};
 const coord=p=>[Number(p.lon??p.lastLon),Number(p.lat??p.lastLat)];
 const valid=p=>p&&Number.isFinite(coord(p)[0])&&Number.isFinite(coord(p)[1])&&(p.lon??p.lastLon)!=null&&(p.lat??p.lastLat)!=null;
 const collection=features=>({type:'FeatureCollection',features});
@@ -8,21 +8,37 @@ const point=(p,properties={})=>({type:'Feature',geometry:{type:'Point',coordinat
 function map(id,points){const el=document.getElementById(id);if(!el)return null;if(!window.maplibregl){el.textContent='Mapa indisponível neste dispositivo.';return null}let m;try{m=new maplibregl.Map({container:el,style:'https://tiles.openfreemap.org/styles/liberty',center:[-50.3,-27.8],zoom:5,attributionControl:true});m.addControl(new maplibregl.NavigationControl(),'top-right');m.on('movestart',()=>interacting++);m.on('moveend',()=>interacting=Math.max(0,interacting-1));const ps=points.filter(valid);if(ps.length){const bounds=new maplibregl.LngLatBounds();ps.forEach(p=>bounds.extend(coord(p)));m.fitBounds(bounds,{padding:48,maxZoom:14,duration:0})}maps.push(m);return m}catch{el.textContent='Não foi possível inicializar o mapa.';return null}}
 function source(m,name,data){m.addSource(name,{type:'geojson',data})}
 function markers(m,name,features,color){source(m,name,collection(features));m.addLayer({id:name,type:'circle',source:name,paint:{'circle-color':color,'circle-radius':7,'circle-stroke-color':'#ffffff','circle-stroke-width':2}});m.on('click',name,e=>{if(!e.features?.length)return;const f=e.features[0],div=document.createElement('div');div.textContent=f.properties.label||'Posição registrada';new maplibregl.Popup().setLngLat(e.lngLat).setDOMContent(div).addTo(m)});m.on('mouseenter',name,()=>m.getCanvas().style.cursor='pointer');m.on('mouseleave',name,()=>m.getCanvas().style.cursor='')}
+function syncPlateMarkers(state){
+ const keep=new Set(),groups=new Map();
+ for(const f of state.data.features){const key=f.geometry.coordinates.map(x=>Number(x).toFixed(5)).join(',');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(f)}
+ for(const group of groups.values()){
+ group.sort((a,b)=>String(a.properties.tripId).localeCompare(String(b.properties.tripId)));
+ group.forEach((f,i)=>{
+ const id=f.properties.tripId,props=f.properties,coords=f.geometry.coordinates,offset=[0,-12-i*32];keep.add(id);let e=state.plateMarkers.get(id);
+ if(!e){const button=document.createElement('button');button.type='button';button.className='fleet-plate';const text=document.createElement('span');button.append(text);button.onclick=ev=>{ev.stopPropagation();if(state.openTrip)state.openTrip(id)};const marker=new maplibregl.Marker({element:button,anchor:'bottom',offset}).setLngLat(coords).addTo(state.map);e={marker,button,text};state.plateMarkers.set(id,e)}
+ const coordKey=coords.join(',');if(e.coordKey!==coordKey){e.marker.setLngLat(coords);e.coordKey=coordKey}
+ if(e.offset!==offset[1]){e.marker.setOffset(offset);e.offset=offset[1]}
+ if(e.text.textContent!==props.plate)e.text.textContent=props.plate;
+ e.button.classList.toggle('is-stale',props.stale);e.button.title=props.label;e.button.setAttribute('aria-label','Abrir viagem: '+props.label);
+ });
+ }
+ for(const [id,e] of state.plateMarkers)if(!keep.has(id)){e.marker.remove();state.plateMarkers.delete(id)}
+}
 function fleet(id,trips,openTrip){
  const el=document.getElementById(id);if(!el)return;
  const ps=trips.filter(valid),features=ps.map(p=>point(p,{tripId:p.id,plate:(p.tractor||'').trim()||'Sem placa',stale:!!p.stale,label:(p.tripReference||p.container||p.code)+' · '+(p.tractor||'Sem placa')+' · '+p.status+' · '+(p.lastFix?new Date(p.lastFix).toLocaleString('pt-BR'):'Sem horário')+(p.stale?' · Última posição conhecida':'')})),data=collection(features),signature=JSON.stringify(data);
  let state=fleetViews.get(id);
- if(state&&state.el===el){state.openTrip=openTrip;if(state.signature===signature)return;state.data=data;state.signature=signature;const src=state.map.getSource('vehicles');if(src)src.setData(data);if(!state.fitted&&ps.length){state.fitted=true;const bounds=new maplibregl.LngLatBounds();ps.forEach(p=>bounds.extend(coord(p)));state.map.fitBounds(bounds,{padding:48,maxZoom:14,duration:0});}return;}
+ if(state&&state.el===el){state.openTrip=openTrip;if(state.signature===signature)return;state.data=data;state.signature=signature;const src=state.map.getSource('vehicles');if(src){src.setData(data);syncPlateMarkers(state)}if(!state.fitted&&ps.length){state.fitted=true;const bounds=new maplibregl.LngLatBounds();ps.forEach(p=>bounds.extend(coord(p)));state.map.fitBounds(bounds,{padding:48,maxZoom:14,duration:0});}return;}
  const instance=map(id,ps);if(!instance)return;
- state={el,map:instance,data,signature,fitted:ps.length>0,openTrip};fleetViews.set(id,state);
+ state={el,map:instance,data,signature,fitted:ps.length>0,openTrip,plateMarkers:new Map()};fleetViews.set(id,state);
  instance.on('load',()=>{if(fleetViews.get(id)!==state)return;
  source(instance,'vehicles',state.data);
  const color=['case',['get','stale'],'#ca821f','#5546bd'];
- instance.addLayer({id:'vehicles',type:'circle',source:'vehicles',paint:{'circle-color':color,'circle-radius':8,'circle-stroke-color':'#ffffff','circle-stroke-width':2}});
- instance.addLayer({id:'vehicle-plates',type:'symbol',source:'vehicles',layout:{'text-field':['get','plate'],'text-size':12,'text-font':['Noto Sans Regular'],'text-anchor':'bottom','text-offset':[0,-0.85],'text-allow-overlap':true,'text-ignore-placement':true},paint:{'text-color':color,'text-halo-color':'#ffffff','text-halo-width':2.2,'text-halo-blur':0}});
+ instance.addLayer({id:'vehicles',type:'circle',source:'vehicles',paint:{'circle-color':color,'circle-radius':10,'circle-stroke-color':'#ffffff','circle-stroke-width':2}});
+ syncPlateMarkers(state);
  const open=e=>{if(!e.features?.length)return;const f=e.features[0],div=document.createElement('div'),label=document.createElement('div');label.textContent=f.properties.label||'Posição registrada';div.append(label);if(state.openTrip&&f.properties.tripId){const button=document.createElement('button');button.type='button';button.textContent='Abrir viagem';button.className='map-open-trip';button.onclick=()=>state.openTrip(f.properties.tripId);div.append(button)}new maplibregl.Popup().setLngLat(e.lngLat).setDOMContent(div).addTo(instance)};
- instance.on('click','vehicle-plates',open);instance.on('click','vehicles',open);
- for(const layer of ['vehicles','vehicle-plates']){instance.on('mouseenter',layer,()=>instance.getCanvas().style.cursor='pointer');instance.on('mouseleave',layer,()=>instance.getCanvas().style.cursor='')}
+ instance.on('click','vehicles',open);
+ for(const layer of ['vehicles']){instance.on('mouseenter',layer,()=>instance.getCanvas().style.cursor='pointer');instance.on('mouseleave',layer,()=>instance.getCanvas().style.cursor='')}
  });
 }
 function circle(p){if(p.polygon){try{const c=JSON.parse(p.polygon).map(a=>[a[1],a[0]]);if(c.length>=3){c.push(c[0]);return{type:'Feature',geometry:{type:'Polygon',coordinates:[c]},properties:{label:p.label||p.name}}}}catch{}}const [lon,lat]=coord(p),r=Number(p.radius||100),a=[];for(let i=0;i<=64;i++){const t=i/64*2*Math.PI;a.push([lon+Math.cos(t)*r/(111320*Math.max(.01,Math.cos(lat*Math.PI/180))),lat+Math.sin(t)*r/111320])}return{type:'Feature',geometry:{type:'Polygon',coordinates:[a]},properties:{label:p.label||p.name}}}

@@ -103,16 +103,24 @@ public static class Api {
  var states=active.Select(t=>new{t.Id,t.Code,t.tripReference,t.Tractor,t.Status,t.LastFix,t.LastLat,t.LastLon,
  hasPosition=t.LastFix.HasValue&&t.LastFix>=t.TrackingSince&&t.LastLat.HasValue&&t.LastLon.HasValue&&Engine.ValidPoint(t.LastLat.Value,t.LastLon.Value),
  stale=(now-(t.LastFix.HasValue&&t.LastFix>=t.TrackingSince?t.LastFix.Value:t.TrackingSince!.Value)).TotalSeconds>t.GapSeconds}).ToList();
- var vehicles=states.Where(t=>t.hasPosition).ToList();
- return Results.Ok(new{total=counts.Sum(x=>x.count),scheduled=counts.Where(x=>x.status=="Programada").Sum(x=>x.count),active=states.Count,finalized=counts.Where(x=>x.status=="Finalizada").Sum(x=>x.count),cancelled=counts.Where(x=>x.status=="Cancelada").Sum(x=>x.count),stale=states.Count(t=>t.stale),withoutPosition=states.Count(t=>!t.hasPosition),vehicles,asOf=now});
+ // Count the same vehicle records used by the map. Prefer the most recent valid position for a repeated plate.
+ var units=states.GroupBy(t=>string.IsNullOrWhiteSpace(t.Tractor)?"trip:"+t.Id.ToString("N"):"plate:"+new string(t.Tractor.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant())
+ .Select(g=>g.OrderByDescending(t=>t.hasPosition).ThenByDescending(t=>t.LastFix).ThenBy(t=>t.Id).First()).ToList();
+ var vehicles=units.Where(t=>t.hasPosition).ToList();
+ return Results.Ok(new{total=counts.Sum(x=>x.count),scheduled=counts.Where(x=>x.status=="Programada").Sum(x=>x.count),active=states.Count,finalized=counts.Where(x=>x.status=="Finalizada").Sum(x=>x.count),cancelled=counts.Where(x=>x.status=="Cancelada").Sum(x=>x.count),stale=vehicles.Count(t=>t.stale),located=vehicles.Count,fresh=vehicles.Count(t=>!t.stale),withoutPosition=units.Count(t=>!t.hasPosition),vehicles,asOf=now});
  });
  api.MapGet("/trips",async(HttpContext c,MozDb db,int? page,Guid? clientId)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=Visible(db,u);var n=Math.Clamp(page??0,0,10000);
  if(clientId.HasValue){if(!Operator(u))return Results.Forbid();if(!await db.Clients.AnyAsync(z=>z.Id==clientId.Value&&z.TenantId==u.TenantId))return Bad("Cliente inválido.");q=q.Where(t=>t.ClientId==clientId.Value);}
- var total=await q.CountAsync();var items=await q.OrderByDescending(x=>x.Created).Skip(n*100).Take(100).ToListAsync();
+ var total=await q.CountAsync();var items=await q.OrderByDescending(x=>x.Created).ThenBy(x=>x.Id).Skip(n*100).Take(100).ToListAsync();
+ object? summary=null;
+ if(u.Role is "operator" or "client"){
+ var counts=await q.GroupBy(t=>new{t.Status,Active=t.Finished==null&&t.TrackingSince!=null&&t.Status!="Cancelada"&&t.Status!="Finalizada"}).Select(g=>new{g.Key.Status,g.Key.Active,Count=g.Count()}).ToListAsync();
+ summary=new{scheduled=counts.Where(x=>x.Status=="Programada").Sum(x=>x.Count),active=counts.Where(x=>x.Active).Sum(x=>x.Count),finalized=counts.Where(x=>x.Status=="Finalizada").Sum(x=>x.Count),cancelled=counts.Where(x=>x.Status=="Cancelada").Sum(x=>x.Count)};
+ }
  var ids=items.Select(t=>t.ClientId).Distinct().ToArray();
  var clients=Operator(u)?await db.Clients.Where(z=>z.TenantId==u.TenantId&&ids.Contains(z.Id)).ToDictionaryAsync(z=>z.Id):new Dictionary<Guid,Client>();
- return Results.Ok(new{total,items=items.Select(t=>TripView(t,u,clients.GetValueOrDefault(t.ClientId))).ToArray()});
+ return Results.Ok(new{total,summary,items=items.Select(t=>TripView(t,u,clients.GetValueOrDefault(t.ClientId))).ToArray()});
  });
  api.MapPost("/trips",async(TripInput x,HttpContext c,MozDb db,IHubContext<MozHub> hub)=>{
  var u=await Current(c,db);if(!Operator(u))return Results.Forbid();

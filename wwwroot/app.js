@@ -65,21 +65,26 @@ content(panel('Programar viagem',form('tripForm',select('clientId','Empresa clie
 let tripSearch='',tripStatus='',tripClient='',tripRequest=0;
 let macroRequest=0,detailReturn='trips';
 function macroCards(r){
- return '<dl class="macro-metrics">'+[['Total de viagens',r.total,'all'],['Programadas',r.scheduled,'pending'],['Em operação',r.active,'active'],['Finalizadas',r.finalized,'done'],['Canceladas',r.cancelled,'cancel'],['Sem atualização GPS',r.stale,'stale']].map(([k,v,state])=>'<div class="macro-metric" data-metric="'+state+'"><dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd></div>').join('')+'</dl>';
+ const vehicles=r.vehicles||[],stale=vehicles.filter(v=>v.stale).length,located=vehicles.length;
+ return '<dl class="macro-metrics live-metrics">'+[['Veículos no mapa',located,'active','Em operação com localização conhecida'],['GPS atualizado',located-stale,'done','Posição dentro do intervalo esperado'],['Sem atualização GPS',stale,'stale','Última localização conhecida'],['Aguardando localização',r.withoutPosition,'pending','Ativados, sem coordenada registrada']].map(([k,v,state,sub])=>'<div class="macro-metric" data-metric="'+state+'"><dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd><small>'+esc(sub)+'</small></div>').join('')+'</dl>';
 }
 async function macro(refresh=false){
  const request=++macroRequest,owner=me?.id,still=()=>me?.id===owner&&view==='macro'&&request===macroRequest;
  const r=await api('/control-tower');if(!still())return;
- const cards=macroCards(r),status=r.vehicles.length+' veículo(s) com posição registrada · '+r.withoutPosition+' viagem(ns) ativas ainda sem posição GPS';
+ const cards=macroCards(r),status=r.vehicles.length+' veículo(s) no mapa · '+r.withoutPosition+' aguardando a primeira localização';
  if(!refresh||!$('#fleetMap')){
- content('<section class="macro-layout"><div id="macroKpis">'+cards+'</div>'+panel('Localização das operações','<div class="macro-map-header"><div><strong>Monitoramento da frota ativa</strong><p id="macroStatus">'+esc(status)+'</p></div><span class="macro-live">Atualização automática</span></div><div id="fleetMap" class="live-map macro-map"></div><div class="macro-map-footer"><span><i class="vehicle-key"></i>Posição recente</span><span><i class="vehicle-key stale"></i>Sem atualização GPS</span><span>Placa do cavalo / veículo exibida junto ao marcador</span></div><p class="audit-note">Mapa de viagens ativadas, independentemente da paginação do tracking. Uma posição antiga indica somente o último local conhecido.</p><p class="muted" id="macroAsOf"></p>')+'</section>');
+ content('<section class="macro-layout"><div id="macroKpis">'+cards+'</div>'+panel('Localização das operações','<div class="macro-map-header"><div><strong>Monitoramento da frota ativa</strong><p id="macroStatus">'+esc(status)+'</p></div><span class="macro-live">Atualização automática</span></div><div id="fleetMap" class="live-map macro-map"></div><div class="macro-map-footer"><span><i class="vehicle-key"></i>Posição recente</span><span><i class="vehicle-key stale"></i>Sem atualização GPS</span><span>Selecione a placa para abrir a viagem</span></div><p class="audit-note">Somente veículos em operação. GPS atualizado + sem atualização = veículos no mapa. Os que aguardam a primeira localização não aparecem até receberem coordenadas.</p><p class="muted" id="macroAsOf"></p>')+'</section>');
  }else{
  changeHtml($('#macroKpis'),cards);if($('#macroStatus').textContent!==status)$('#macroStatus').textContent=status;
  }
  const asOf='Consulta: '+date(r.asOf);if($('#macroAsOf').textContent!==asOf)$('#macroAsOf').textContent=asOf;
- if(window.MozMaps)MozMaps.fleet('fleetMap',r.vehicles,async id=>{if(!still()&&view!=='macro')return;detailReturn='macro';selected=id;view='detail';await render()});
+ if(window.MozMaps)MozMaps.fleet('fleetMap',r.vehicles,async id=>{if(me?.id!==owner||view!=='macro')return;detailReturn='macro';selected=id;view='detail';await render()});
 }
 
+function trackingCards(r){
+ if(!r)return '';
+ return '<dl class="macro-metrics tracking-metrics">'+[['Programadas',r.scheduled,'pending'],['Em operação',r.active,'active'],['Finalizadas',r.finalized,'done'],['Canceladas',r.cancelled,'cancel']].map(([k,v,state])=>'<div class="macro-metric" data-metric="'+state+'"><dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd></div>').join('')+'</dl><p class="tracking-count-note">Indicadores de todas as viagens '+(tripClient?'do cliente selecionado':'do seu escopo')+', independentemente da busca, status e página da grade.</p>';
+}
 function changeHtml(el,html){if(el&&el.innerHTML!==html)el.innerHTML=html;}
 function patchTripRows(container,html){
  const draft=document.createElement('template');draft.innerHTML=html;
@@ -111,15 +116,17 @@ async function trips(refresh=false){const request=++tripRequest,owner=me?.id,pag
  const badge=t=>'<span class="status" data-state="'+esc(t.status)+'">'+esc(t.status)+'</span>'+(!t.finished?'<small class="muted"> · '+(t.trackingActive?'Ativa':'Inativa')+'</small>':'');
  const open=t=>'<button class="open-trip" data-trip="'+esc(t.id)+'" aria-label="Abrir viagem '+esc(t.code)+'">Detalhes <span aria-hidden="true">›</span></button>';
  const rows=me.role==='driver'?'<div class="driver-list">'+filtered.map(t=>'<article class="driver-trip" data-trip-row="'+esc(t.id)+'"><div class="row spread"><strong>'+esc(t.code)+'</strong>'+badge(t)+'</div><h3>'+esc(tripRef(t))+'</h3><p>Programada: '+date(t.scheduled)+'</p><p>Placa: '+esc(t.tractor||'Não informada')+'</p>'+open(t)+'</article>').join('')+'</div>':'<div class="table-scroll" tabindex="0" role="region" aria-label="Lista de viagens"><table class="operation-table"><thead><tr><th scope="col">Código da viagem</th><th scope="col">Status</th><th scope="col">Motorista</th>'+(me.role==='operator'?'<th scope="col">Cliente / CNPJ</th>':'')+'<th scope="col">Cavalo / carreta</th><th scope="col">Programação</th><th scope="col">Último GPS</th><th scope="col">Distância</th><th scope="col">Ação</th></tr></thead><tbody>'+filtered.map(t=>'<tr data-trip-row="'+esc(t.id)+'"><th scope="row"><button class="trip-link" data-trip="'+esc(t.id)+'">'+esc(tripRef(t))+'</button><br><small>'+esc(t.code)+'</small></th><td>'+badge(t)+'</td><td>'+esc(t.driverName||'Pendente')+'</td>'+(me.role==='operator'?'<td>'+esc(t.clientName||'—')+'<br><small>'+esc(t.clientCnpj||'CNPJ pendente')+'</small></td>':'')+'<td>'+esc(t.tractor||'—')+'<br><small>'+esc(t.trailer||'—')+'</small></td><td>'+date(t.scheduled)+'</td><td>'+date(t.lastFix)+'</td><td class="numeric">'+num(t.distanceKm)+' km</td><td>'+open(t)+'</td></tr>').join('')+'</tbody></table></div>';
+ const cards=me.role==='driver'?'':trackingCards(r.summary);
  const resultText=filtered.length+' nesta página · '+r.total+' no total · Página '+(tripPage+1),empty=filtered.length?'':'<p class="empty-state">Nenhuma viagem disponível para os filtros.</p>';
  if(refresh&&$('#tripRows')){
+  changeHtml($('#trackingKpis'),cards);
   const result=$('#tripResult');if(result&&result.textContent!==resultText)result.textContent=resultText;
   patchSelect('tripStatus',filters);patchSelect('tripClient',filters);
   patchTripRows($('#tripRows'),rows);changeHtml($('#tripEmpty'),empty);
   $('#prev').disabled=tripPage===0;$('#next').disabled=(tripPage+1)*100>=r.total;bindTripButtons();
   return;
  }
- content('<div class="operations-layout tracking-only">'+panel(me.role==='driver'?'Demandas atribuídas':me.role==='client'?'Entregas autorizadas':'Viagens monitoradas',filters+'<p class="result-count" id="tripResult">'+resultText+'</p><div id="tripRows">'+rows+'</div><div id="tripEmpty">'+empty+'</div><div class="row pager">'+btn('Página anterior','prev')+btn('Próxima página','next')+'</div>')+'</div>');
+ content((me.role==='driver'?'':'<div id="trackingKpis">'+cards+'</div>')+'<div class="operations-layout tracking-only">'+panel(me.role==='driver'?'Demandas atribuídas':me.role==='client'?'Entregas autorizadas':'Viagens monitoradas',filters+'<p class="result-count" id="tripResult">'+resultText+'</p><div id="tripRows">'+rows+'</div><div id="tripEmpty">'+empty+'</div><div class="row pager">'+btn('Página anterior','prev')+btn('Próxima página','next')+'</div>')+'</div>');
  $('#tripSearch').onchange=e=>{tripSearch=e.target.value;trips(true)};$('#tripStatus').onchange=e=>{tripStatus=e.target.value;trips(true)};if($('#tripClient'))$('#tripClient').onchange=e=>{tripClient=e.target.value;tripPage=0;trips(true)};$('#prev').disabled=tripPage===0;$('#next').disabled=(tripPage+1)*100>=r.total;on('prev',async()=>{tripPage--;await trips(true)});on('next',async()=>{tripPage++;await trips(true)});bindTripButtons()}
 function routeSvg(fixes,stages){const all=[...fixes,...stages];if(!all.length)return '<p>Sem posições registradas.</p>';const xs=all.map(p=>p.lon),ys=all.map(p=>p.lat),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);const scale=Math.min(550/Math.max(maxX-minX,.00001),260/Math.max(maxY-minY,.00001));const x=p=>25+(p.lon-minX)*scale,y=p=>285-(p.lat-minY)*scale;const line=fixes.map(p=>x(p)+','+y(p)).join(' ');return '<svg class="map" viewBox="0 0 600 310" role="img" aria-label="Traçado das posições registradas, sem mapa cartográfico"><polyline points="'+line+'" fill="none" stroke="#17669b" stroke-width="3"/>'+stages.map(p=>'<circle cx="'+x(p)+'" cy="'+y(p)+'" r="6" fill="#a96916"><title>'+esc(p.label)+'</title></circle>').join('')+(fixes.length?'<circle cx="'+x(fixes.at(-1))+'" cy="'+y(fixes.at(-1))+'" r="7" fill="#16794f"/>':'')+'</svg><p class="muted">Traçado GPS registrado, sem mapa cartográfico ou cálculo de rota planejada. Linhas entre pontos não comprovam percurso em lacunas.</p>'}
 function stopAuditPanel(a,error=''){
@@ -241,7 +248,7 @@ async function report(){const r=await api('/reports');content(panel('Indicadores
 $('#logout').onclick=async()=>{try{await disablePush(false).catch(()=>{});await api('/logout',{});if(live)await live.stop().catch(()=>{});stopGps(true);clearInterval(poll);login()}catch(e){toast(e.message)}};
 $('#noticeBtn').onclick=async()=>{if(!me||me.role==='global')return;view='notices';noticePage=0;await render()};
 window.addEventListener('online',()=>{syncTracking().catch(()=>{});flush().catch(()=>{});if(me&&!live)startLive().catch(()=>{})});window.addEventListener('offline',()=>{if(tracking)toast('Sem internet. A viagem ativada continua com armazenamento local.');});window.addEventListener('visibilitychange',()=>{if(document.hidden&&tracking&&!window.MozNative)toast('O GPS web pode ser interrompido em segundo plano.');if(!document.hidden){syncTracking().catch(()=>{});flush().catch(()=>{})}});
-if('serviceWorker'in navigator)navigator.serviceWorker.register('/service-worker.js?v=14',{updateViaCache:'none'}).catch(()=>{});
+if('serviceWorker'in navigator)navigator.serviceWorker.register('/service-worker.js?v=15',{updateViaCache:'none'}).catch(()=>{});
 (async()=>{if(location.protocol!=='https:'){root.innerHTML='<div class="auth-shell"><section class="auth-visual"><div class="auth-mark">MOZ<span>.</span></div><p>Gestão logística</p></section><section class="auth-form"><div class="login"><h2>Conexão segura necessária</h2><p>Por segurança, o acesso às operações exige HTTPS. Não informe credenciais em conexão não criptografada.</p><a href="https://moz.runasp.net/">Acessar conexão segura</a></div></section></div>';return}try{me=await api('/me');await enter()}catch{login()}})();
 
 function keyBytes(key){const s=key.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(key.length/4)*4,'=');return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
