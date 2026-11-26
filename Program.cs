@@ -26,7 +26,7 @@ b.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBeare
  o.TokenValidationParameters=new(){ValidateIssuer=true,ValidIssuer=issuer,ValidateAudience=true,ValidAudience=audience,ValidateIssuerSigningKey=true,IssuerSigningKey=signing,ValidateLifetime=true,ClockSkew=TimeSpan.FromSeconds(30),NameClaimType="sub",RoleClaimType="role"};
  o.Events=new JwtBearerEvents{OnMessageReceived=c=>{c.Token=c.Request.Cookies["moz_session"];return Task.CompletedTask;}};
 });
-b.Services.AddAuthorization();b.Services.AddSignalR();
+b.Services.AddAuthorization();b.Services.AddSignalR();b.Services.AddSingleton<RoadTrace>();
 var keysPath=Path.GetFullPath(cfg["DataProtection:KeysPath"]??"../private/keys",b.Environment.ContentRootPath);
 b.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysPath)).SetApplicationName("MOZ");
 b.Services.AddRateLimiter(o=>{o.RejectionStatusCode=429;o.AddPolicy("auth",c=>RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new FixedWindowRateLimiterOptions{PermitLimit=12,Window=TimeSpan.FromMinutes(1),QueueLimit=0}));});
