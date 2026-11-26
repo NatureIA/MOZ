@@ -1,6 +1,9 @@
 bin/
 obj/
 publish/
+node_modules/
+mobile/**/.gradle/
+mobile/**/build/
 .env
 *.user
 appsettings.Production.json

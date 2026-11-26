@@ -16,9 +16,18 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - name: Install map library
+        shell: pwsh
+        run: |
+          npm install --no-save --package-lock=false maplibre-gl@4.7.1
+          New-Item -ItemType Directory -Force wwwroot/vendor | Out-Null
+          Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.js wwwroot/vendor/
+          Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.css wwwroot/vendor/
+          Copy-Item node_modules/maplibre-gl/LICENSE.txt wwwroot/vendor/ -ErrorAction SilentlyContinue
       - name: Validate frontend
         run: |
           node --check wwwroot/app.js
+          node --check wwwroot/maps.js
           node --check wwwroot/service-worker.js
           node -e "JSON.parse(require('fs').readFileSync('wwwroot/manifest.webmanifest','utf8'))"
       - name: Restore
@@ -57,15 +66,26 @@ jobs:
           $dest = "-dest:contentPath='$site',computerName='$endpoint',userName='$($env:DEPLOY_USER)',password='$($env:DEPLOY_PASSWORD)',authType=Basic,includeAcls=False"
           & $exe "-verb:sync" "-source:contentPath='$src'" $dest "-enableRule:AppOffline" "-enableRule:DoNotDeleteRule" "-disableLink:AppPoolExtension" "-disableLink:ContentExtension" "-disableLink:CertificateExtension" "-retryAttempts:2"
           if ($LASTEXITCODE -ne 0) { throw "Direct WebDeploy failed (exit $LASTEXITCODE)." }
+      - name: HTTP availability diagnostics
+        shell: pwsh
+        run: |
+          try {
+            $r = Invoke-WebRequest -Uri "http://moz.runasp.net/health" -SkipHttpErrorCheck -MaximumRedirection 0 -TimeoutSec 15
+            Write-Host "HTTP status=$([int]$r.StatusCode)"
+            try {
+              $h = $r.Content | ConvertFrom-Json
+              Write-Host "HTTP application=$($h.app) version=$($h.version) status=$($h.status) database=$($h.database) step=$($h.databaseStep) type=$($h.databaseErrorType) sql=$($h.databaseErrorNumber)"
+            } catch {}
+          } catch { Write-Host "HTTP probe failed: $($_.Exception.GetType().Name)" }
       - name: Production health
         shell: pwsh
         run: |
           for ($i=1; $i -le 18; $i++) {
             try {
               $h=Invoke-RestMethod -Uri "https://moz.runasp.net/health" -TimeoutSec 15
-              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.1.1") { exit 0 }
+              if ($h.status -eq "ok" -and $h.database -eq "ready" -and $h.version -eq "0.2.0") { exit 0 }
               Write-Host "Health status=$($h.status) database=$($h.database) version=$($h.version) step=$($h.databaseStep) type=$($h.databaseErrorType) sql=$($h.databaseErrorNumber)"
-              if ($h.app -eq "MOZ" -and $h.version -eq "0.1.1" -and $h.status -eq "error") { break }
+              if ($h.app -eq "MOZ" -and $h.version -eq "0.2.0" -and $h.status -eq "error") { break }
             } catch {
               $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "none" }
               Write-Host "Health HTTP=$code attempt=$i type=$($_.Exception.GetType().Name)"

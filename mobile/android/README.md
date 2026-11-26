@@ -1,0 +1,2 @@
+# MOZ Driver Android
+Camada nativa Android com WebView restrita ao domínio HTTPS do MOZ, serviço foreground de localização, notificação persistente, captura de foto e fila SQLite. A coleta é iniciada pelo motorista durante uma viagem atribuída e depende da sessão autorizada. Não garante continuidade após force stop, perda de permissões, desligamento ou encerramento pelo sistema. Precisa de teste real em aparelhos. APK de debug não é distribuição comercial. iOS e assinatura de release pendentes.

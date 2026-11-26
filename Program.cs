@@ -36,7 +36,9 @@ var app=b.Build();
 app.UseExceptionHandler(e=>e.Run(async c=>{c.Response.StatusCode=500;await c.Response.WriteAsJsonAsync(new{error="Falha interna. Consulte o administrador."});}));
 app.UseHsts();app.UseHttpsRedirection();
 app.Use(async(c,next)=>{
- c.Response.Headers["X-Content-Type-Options"]="nosniff";c.Response.Headers["Referrer-Policy"]="no-referrer";c.Response.Headers["X-Frame-Options"]="DENY";
+ c.Response.Headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.openfreemap.org; connect-src 'self' https://tiles.openfreemap.org; font-src 'self' data: https://tiles.openfreemap.org; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+ c.Response.Headers["X-Content-Type-Options"]="nosniff";
+ if(!c.Request.IsHttps&&(c.Request.Path.StartsWithSegments("/api")||c.Request.Path.StartsWithSegments("/hubs"))){c.Response.StatusCode=403;await c.Response.WriteAsJsonAsync(new{error="HTTPS obrigatório para dados e autenticação."});return;}c.Response.Headers["Referrer-Policy"]="no-referrer";c.Response.Headers["X-Frame-Options"]="DENY";
  if((c.Request.Path.StartsWithSegments("/api")||c.Request.Path.StartsWithSegments("/hubs"))&&!startup.Ready){c.Response.StatusCode=503;await c.Response.WriteAsJsonAsync(new{error="MOZ inicializando ou indisponível."});return;}
  if(c.Request.Path.StartsWithSegments("/api")){c.Response.Headers.CacheControl="no-store";if((c.Request.Method is "POST" or "PUT" or "PATCH" or "DELETE") && c.Request.Headers["X-MOZ-Request"]!="1"){c.Response.StatusCode=403;return;}}
  await next();
@@ -44,7 +46,7 @@ app.Use(async(c,next)=>{
 app.UseDefaultFiles();app.UseStaticFiles();app.UseRouting();app.UseRateLimiter();app.UseAuthentication();app.UseAuthorization();
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.1.1",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.0",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
