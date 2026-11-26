@@ -48,7 +48,7 @@ public class PushWorker(IServiceScopeFactory scopes,PushKeys keys,StartupState s
  if(ct.IsCancellationRequested)break;
  var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==d.UserId&&x.Active,ct);
  if(u==null||!PushEndpoints.SafeEndpoint(d.Endpoint)||(u.TenantId is {} tenant&&!await db.Tenants.AnyAsync(t=>t.Id==tenant&&t.Active,ct))){db.PushDevices.Remove(d);continue;}
- var trips=u.Role switch{"operator"=>db.Trips.Where(t=>t.TenantId==u.TenantId),"client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),"driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),_=>db.Trips.Where(t=>false)};
+ var trips=u.Role switch{"operator" or "observer" when u.TenantId.HasValue=>db.Trips.Where(t=>t.TenantId==u.TenantId),"client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),"driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),_=>db.Trips.Where(t=>false)};
  var cursor=d.Cursor;var q=from e in db.Events join t in trips on e.TripId equals t.Id where e.Recorded>cursor&&e.Recorded<=now select e;
  var kinds=(d.Kinds??"").Split('|',StringSplitOptions.RemoveEmptyEntries);
  if(kinds.Length>0)q=q.Where(e=>kinds.Contains(e.Kind));
