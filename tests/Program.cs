@@ -57,4 +57,9 @@ pauseAudit.Add(Position(190,authorization:epoch.AddSeconds(185)));
 for(int sec=250;sec<=430;sec+=60)pauseAudit.Add(Position(sec,authorization:epoch.AddSeconds(185)));
 var pauseStops=pauseAudit.Complete(epoch.AddSeconds(430));
 Check(pauseStops.Count==2&&pauseStops[0].DurationSeconds==180&&pauseStops[0].State=="Autorização interrompida","activation boundaries prevent false stop duration");
+var inferredAudit=new GpsStopAudit(stopTrip,Array.Empty<Stage>());
+for(int sec=0;sec<=180;sec+=30){var f=Position(sec);f.Speed=null;inferredAudit.Add(f);}
+Check(inferredAudit.Complete(epoch.AddSeconds(180)).Single().DurationSeconds==180,"stop inferred without device speed");
+var shortAudit=new GpsStopAudit(stopTrip,Array.Empty<Stage>());shortAudit.Add(Position(0));shortAudit.Add(Position(60));shortAudit.Add(Position(120,60));
+Check(shortAudit.Complete(epoch.AddSeconds(120)).Count==0,"short stop below configured threshold");
 Console.WriteLine("Geometry and input rules passed.");
