@@ -55,6 +55,8 @@ jobs:
           node --check wwwroot/service-worker.js
           node tests/live-refresh.test.cjs
           node tests/road-match.test.mjs
+          node tests/road-tiles.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Road tile integration failed" }
           node --check wwwroot/vendor/road-match.js
           node -e "JSON.parse(require('fs').readFileSync('wwwroot/manifest.webmanifest','utf8'))"
       - name: Restore
