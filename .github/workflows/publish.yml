@@ -40,7 +40,7 @@ jobs:
       - name: Install map library
         shell: pwsh
         run: |
-          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7 jsdom@26.1.0 @mapbox/vector-tile@2.0.4 pbf@4.0.1 esbuild@0.25.12
+          npm install --no-save --package-lock=false maplibre-gl@4.7.1 @microsoft/signalr@8.0.7 jsdom@26.1.0 @mapbox/vector-tile@2.0.4 pbf@4.0.1 esbuild@0.25.12 playwright@1.51.1
           New-Item -ItemType Directory -Force wwwroot/vendor | Out-Null
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.js wwwroot/vendor/
           Copy-Item node_modules/maplibre-gl/dist/maplibre-gl.css wwwroot/vendor/
@@ -61,6 +61,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Road tile integration failed" }
           node --check wwwroot/vendor/road-match.js
           node -e "JSON.parse(require('fs').readFileSync('wwwroot/manifest.webmanifest','utf8'))"
+      - name: Validate responsive layout in Chromium
+        shell: pwsh
+        run: |
+          npx --no-install playwright install chromium
+          if ($LASTEXITCODE -ne 0) { throw "Chromium installation failed" }
+          node tests/mobile-layout.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Mobile layout validation failed" }
       - name: Restore
         run: dotnet restore MOZ.csproj
       - name: Build
