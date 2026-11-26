@@ -55,5 +55,18 @@ w.eval(app.slice(reuseStart,reuseEnd));const form=doc.createElement('form');form
 w.bindDriverReuse(form,[{cpf:'52998224725',name:'Motorista A'},{cpf:'11144477735',name:'Motorista A'}]);form.elements.driverChoice.value='11144477735';form.elements.driverChoice.dispatchEvent(new w.Event('change'));assert.equal(form.elements.driverCpf.value,'111.444.777-35');assert.equal(form.elements.driverName.value,'Motorista A');assert.equal(form.elements.driverCpf.readOnly,true);
 form.elements.driverChoice.value='';form.elements.driverChoice.dispatchEvent(new w.Event('change'));assert.equal(form.elements.driverCpf.value,'');assert.equal(form.elements.driverName.readOnly,false);
 form.elements.tractor.value='XYZ9A87';assert.equal(form.elements.tractor.value,'XYZ9A87');assert.equal(form.querySelector('#tractorOptions option').value,'ABC1D23');
+// Authentication flow: CPF is checked before requesting new account data.
+const auth=app.slice(app.indexOf('function login(register=false'),app.indexOf('let live=',app.indexOf('function login(register=false')));
+assert.ok(auth.includes("api('/driver-account',{cpf:x.cpf})"));
+assert.ok(auth.includes("if(r.exists)askPassword(x.cpf)"));
+assert.ok(auth.includes("api('/register-driver',x)"));
+assert.ok(auth.includes("enterAccount({login:x.cpf,password:x.password})"));
+assert.ok(!auth.includes('A identidade será conferida'));
+const backend=fs.readFileSync('Program.cs','utf8'),apiSource=fs.readFileSync('Api.cs','utf8');
+assert.ok(backend.includes('DriverAccounts.LockCpf(db,cpf)'));
+assert.ok(backend.includes('CPF já cadastrado. Entre com sua senha existente.'));
+assert.ok(backend.includes('approved=true'));
+assert.ok(apiSource.includes('DriverAccounts.LockCpf(db,cpf)'));
+assert.ok(!apiSource.includes('d.Active&&d.IdentityVerified'));
 dom.window.close();
 console.log('Live update: stable row, focus, scroll, map and camera.');
