@@ -133,7 +133,7 @@ public class MozHub(MozDb db):Hub {
  if(!Guid.TryParse(Context.User?.FindFirstValue("sub"),out var id)){Context.Abort();return;}
  var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id&&x.Active);
  if(u==null||(u.TenantId is {} tid&&!await db.Tenants.AnyAsync(t=>t.Id==tid&&t.Active))){Context.Abort();return;}
- if(u.Role=="operator"&&u.TenantId is {} tenant)await Groups.AddToGroupAsync(Context.ConnectionId,"operator:"+tenant);
+ if((u.Role is "operator" or "observer")&&u.TenantId is {} tenant)await Groups.AddToGroupAsync(Context.ConnectionId,"operator:"+tenant);
  else if(u.Role=="client"&&u.ClientId is {} client&&u.TenantId is {} ct)await Groups.AddToGroupAsync(Context.ConnectionId,"client:"+ct+":"+client);
  else if(u.Role=="driver"&&u.IdentityVerified)await Groups.AddToGroupAsync(Context.ConnectionId,"driver:"+u.Id);
  await base.OnConnectedAsync();
