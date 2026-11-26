@@ -62,7 +62,7 @@ app.Use(async(c,next)=>{
 });
 var storage=Path.GetFullPath(cfg["Storage:RootPath"]??"../private/documents",app.Environment.ContentRootPath);
 var webroot=Path.GetFullPath(app.Environment.WebRootPath??Path.Combine(app.Environment.ContentRootPath,"wwwroot"));
-app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.1",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
+app.MapGet("/health",()=>Results.Ok(new{app="MOZ",status=startup.Ready?"ok":startup.Failed?"error":"initializing",database=startup.Ready?"ready":startup.Failed?"error":"waiting",version="0.2.2",databaseStep=startup.Step,databaseErrorType=startup.ErrorType,databaseErrorNumber=startup.ErrorNumber}));
 app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
  for(var attempt=1;attempt<=4;attempt++){
  try{
@@ -107,6 +107,7 @@ app.Lifetime.ApplicationStarted.Register(()=>_ = Task.Run(async()=>{
 }));
 var api=app.MapGroup("/api");
 api.MapPost("/login",async(LoginInput input,MozDb db,IPasswordHasher<User> hasher,HttpContext c)=>{
+ if(string.IsNullOrWhiteSpace(input.Login)||string.IsNullOrEmpty(input.Password)||input.Login.Length>256||input.Password.Length>128)return Results.BadRequest(new{error="Informe credenciais válidas."});
  var login=input.Login.Trim().ToLowerInvariant();if(Engine.Digits(login).Length==11&&!login.Contains('@'))login=Engine.Digits(login);
  var u=await db.Users.SingleOrDefaultAsync(x=>x.Login==login&&x.Active);
  if(u==null||u.Role is not ("global" or "operator" or "client" or "driver")||hasher.VerifyHashedPassword(u,u.PasswordHash,input.Password)==PasswordVerificationResult.Failed)return Results.Unauthorized();
