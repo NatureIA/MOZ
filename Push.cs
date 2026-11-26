@@ -28,8 +28,17 @@ public static class PushEndpoints{
  var u=await UserFor(c,db);if(u==null||u.Role=="global")return Results.Forbid();
  if(!SafeEndpoint(x.Endpoint)||!SafeKey(x.P256dh,65)||!SafeKey(x.Auth,16)||x.Kinds?.Length>2000)return Results.BadRequest(new{error="Inscrição push inválida."});
  var hash=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(x.Endpoint)));var d=await db.PushDevices.SingleOrDefaultAsync(z=>z.EndpointHash==hash);if(d==null){d=new PushDevice{EndpointHash=hash};db.PushDevices.Add(d);}
- d.UserId=u.Id;d.Endpoint=x.Endpoint;d.P256dh=x.P256dh;d.Auth=x.Auth;d.Cursor=DateTimeOffset.UtcNow;d.NextAttempt=d.Cursor;d.Failures=0;d.Kinds=x.Kinds;
+ var same=d.UserId==u.Id&&d.P256dh==x.P256dh&&d.Auth==x.Auth&&d.Kinds==x.Kinds;
+ d.UserId=u.Id;d.Endpoint=x.Endpoint;d.P256dh=x.P256dh;d.Auth=x.Auth;d.Kinds=x.Kinds;
+ if(!same){d.Cursor=DateTimeOffset.UtcNow;d.NextAttempt=d.Cursor;d.Failures=0;}
  await db.SaveChangesAsync();return Results.Ok();});
+ api.MapPost("/push/status",async(UnsubscribeInput x,HttpContext c,MozDb db)=>{
+ var u=await UserFor(c,db);if(u==null||u.Role=="global")return Results.Forbid();
+ if(!SafeEndpoint(x.Endpoint))return Results.BadRequest();
+ var hash=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(x.Endpoint)));
+ var d=await db.PushDevices.AsNoTracking().SingleOrDefaultAsync(z=>z.EndpointHash==hash&&z.UserId==u.Id);
+ return Results.Ok(new{registered=d!=null,retrying=d!=null&&d.Failures>0});
+ });
  api.MapPost("/push/unsubscribe",async(UnsubscribeInput x,HttpContext c,MozDb db)=>{
  var u=await UserFor(c,db);if(u==null)return Results.Unauthorized();if(x.Endpoint==null||x.Endpoint.Length>2000)return Results.BadRequest();var hash=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(x.Endpoint)));var d=await db.PushDevices.SingleOrDefaultAsync(z=>z.EndpointHash==hash&&z.UserId==u.Id);if(d!=null){db.PushDevices.Remove(d);await db.SaveChangesAsync();}return Results.Ok();});
  }
@@ -49,13 +58,15 @@ public class PushWorker(IServiceScopeFactory scopes,PushKeys keys,StartupState s
  var u=await db.Users.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==d.UserId&&x.Active,ct);
  if(u==null||u.Role is not ("global" or "operator" or "client" or "driver")||!PushEndpoints.SafeEndpoint(d.Endpoint)||(u.TenantId is {} tenant&&!await db.Tenants.AnyAsync(t=>t.Id==tenant&&t.Active,ct))){db.PushDevices.Remove(d);continue;}
  var trips=u.Role switch{"operator"=>db.Trips.Where(t=>t.TenantId==u.TenantId),"client"=>db.Trips.Where(t=>t.TenantId==u.TenantId&&t.ClientId==u.ClientId),"driver" when u.IdentityVerified=>db.Trips.Where(t=>t.DriverId==u.Id),_=>db.Trips.Where(t=>false)};
- var cursor=d.Cursor;var q=from e in db.Events join t in trips on e.TripId equals t.Id where e.Recorded>cursor&&e.Recorded<=now select e;
+ var cursor=d.Cursor;var watermark=now.AddSeconds(-5);
+ var q=from e in db.Events join t in trips on e.TripId equals t.Id where e.Recorded>cursor&&e.Recorded<=watermark select e;
  var kinds=(d.Kinds??"").Split('|',StringSplitOptions.RemoveEmptyEntries);
  if(kinds.Length>0)q=q.Where(e=>kinds.Contains(e.Kind));
  var count=await q.CountAsync(ct);d.NextAttempt=now.AddSeconds(20);
- if(count==0){d.Cursor=now;continue;}
- try{var payload=JsonSerializer.Serialize(new{title="MOZ · Atualizações operacionais",body=count==1?"Uma nova atualização está disponível.":$"{count} novas atualizações estão disponíveis.",url="/"});
- await push.SendNotificationAsync(new WebPush.PushSubscription(d.Endpoint,d.P256dh,d.Auth),payload,keys.Get(),ct);d.Cursor=now;d.Failures=0;}
+ if(count==0){if(watermark>d.Cursor)d.Cursor=watermark;continue;}
+ try{var latest=await q.OrderByDescending(e=>e.Recorded).ThenByDescending(e=>e.Id).Select(e=>e.Id).FirstAsync(ct);
+ var payload=JsonSerializer.Serialize(new{title="MOZ · Operação logística",body=count==1?"Novo evento operacional. Toque para consultar.":$"{count} novos eventos operacionais. Toque para consultar.",url="/?notifications=1",tag="moz-"+latest.ToString("N")});
+ await push.SendNotificationAsync(new WebPush.PushSubscription(d.Endpoint,d.P256dh,d.Auth),payload,keys.Get(),ct);d.Cursor=watermark;d.Failures=0;}
  catch(WebPushException ex)when((int)ex.StatusCode is 404 or 410){db.PushDevices.Remove(d);}
  catch(Exception ex){d.Failures=Math.Min(d.Failures+1,10);d.NextAttempt=now.AddSeconds(Math.Min(3600,30*Math.Pow(2,d.Failures)));log.LogWarning("Push delivery failed: {Type}",ex.GetType().Name);}
  }
