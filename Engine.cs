@@ -109,3 +109,33 @@ public sealed class GpsStopAudit(Trip trip,IReadOnlyList<Stage> stages){
  Close(state);completed=true;return stops;
  }
 }
+
+
+// Operational dwell intervals are not a claim that physical loading/unloading was observed.
+public sealed record CargoTiming(Guid? OriginId,Guid? DestinationId,double? LoadingSeconds,double? UnloadingSeconds,double? HandlingSeconds,double? TravelSeconds,DateTimeOffset? TravelFrom,DateTimeOffset? TravelUntil,bool LoadingOngoing,bool UnloadingOngoing,bool TravelOngoing,string LoadingBasis,string UnloadingBasis,string EndpointBasis);
+public static class TripTiming {
+ public static (DateTimeOffset? At,string Basis) StageEnd(Stage s,DateTimeOffset? lastInside,IReadOnlyList<Pod> pods){
+ if(s.Arrived==null)return (null,"Sem chegada registrada");
+ var proof=pods.FirstOrDefault(p=>p.StageId==s.Id&&p.LocationVerified&&p.Captured>=s.Arrived.Value);
+ if(s.FinishOnPod&&proof!=null&&(s.Departed==null||proof.Captured<=s.Departed.Value))return (proof.Captured,"Comprovante validado");
+ if(s.Departed is {} departed&&departed>=s.Arrived.Value)return (departed,"Saída da cerca");
+ if(lastInside is {} last&&last>=s.Arrived.Value)return (last,"Última evidência dentro da cerca");
+ return (null,"Sem evidência de término");
+ }
+ public static CargoTiming Measure(Trip t,IReadOnlyList<Stage> stages,IReadOnlyList<Pod> pods,Func<Guid,DateTimeOffset?> lastInside){
+ var origins=stages.Where(s=>s.CargoRole=="origin").ToArray();var destinations=stages.Where(s=>s.CargoRole=="destination").ToArray();
+ bool legacy=!stages.Any(s=>!string.IsNullOrEmpty(s.CargoRole));
+ if(legacy){origins=stages.Where(s=>string.Equals(s.Kind,"carregamento",StringComparison.OrdinalIgnoreCase)).ToArray();destinations=stages.Where(s=>string.Equals(s.Kind,"entrega",StringComparison.OrdinalIgnoreCase)||string.Equals(s.Kind,"descarga",StringComparison.OrdinalIgnoreCase)).ToArray();}
+ Stage? origin=origins.Length==1?origins[0]:null,destination=destinations.Length==1?destinations[0]:null;
+ if(origin!=null&&destination!=null&&origin.Order>=destination.Order){origin=null;destination=null;}
+ var oe=origin==null?(At:(DateTimeOffset?)null,Basis:"Origem não identificada"):StageEnd(origin,lastInside(origin.Id),pods);
+ var de=destination==null?(At:(DateTimeOffset?)null,Basis:"Destino não identificado"):StageEnd(destination,lastInside(destination.Id),pods);
+ double? Duration(DateTimeOffset? start,DateTimeOffset? end)=>start.HasValue&&end.HasValue&&end>=start?(end.Value-start.Value).TotalSeconds:null;
+ var load=Duration(origin?.Arrived,oe.At);var unload=Duration(destination?.Arrived,de.At);
+ var from=origin?.Departed;var until=destination?.Arrived;
+ if(from.HasValue&&!until.HasValue&&destination!=null&&t.LastFix>=from)until=t.LastFix;
+ var travel=Duration(from,until);
+ var handling=load.HasValue&&unload.HasValue&&oe.At<=destination?.Arrived?load+unload:null;
+ return new(origin?.Id,destination?.Id,load,unload,handling,travel,from,travel.HasValue?until:null,oe.Basis=="Última evidência dentro da cerca"&&!Engine.Terminal(t),de.Basis=="Última evidência dentro da cerca"&&!Engine.Terminal(t),travel.HasValue&&destination?.Arrived==null&&!Engine.Terminal(t),oe.Basis,de.Basis,legacy?"Classificação legada por tipo de etapa":"Origem e destino definidos");
+ }
+}
