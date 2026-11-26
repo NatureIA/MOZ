@@ -16,6 +16,27 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - name: Preflight HTTPS and deployment configuration
+        shell: pwsh
+        env:
+          DEPLOY_SITE: ${{ secrets.WEBSITE_NAME }}
+          DEPLOY_SERVER: ${{ secrets.SERVER_COMPUTER_NAME }}
+          DEPLOY_USER: ${{ secrets.SERVER_USERNAME }}
+          DEPLOY_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($key in @("DEPLOY_SITE","DEPLOY_SERVER","DEPLOY_USER","DEPLOY_PASSWORD")) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($key))) { throw "Missing deployment configuration: $key" }
+          }
+          $server = $env:DEPLOY_SERVER.Trim()
+          if ($server -notmatch '^https://') { $server = "https://" + $server }
+          $uri = [Uri]$server
+          if ($env:DEPLOY_SITE.Trim() -ne "site111488" -or $env:DEPLOY_USER.Trim() -ne "site111488" -or $uri.Host -ne "site111488.siteasp.net" -or $uri.Port -ne 8172 -or $uri.Scheme -ne "https") { throw "MOZ deployment destination does not match expected site." }
+          $code = & curl.exe --silent --show-error --max-time 20 --retry 2 --output NUL --write-out "%{http_code}" "https://moz.runasp.net/health"
+          if ($LASTEXITCODE -ne 0 -or $code -eq "000") { throw "HTTPS/TLS unavailable before deployment. Validate certificate and hosting connectivity." }
+          $redirect = & curl.exe --silent --show-error --max-time 20 --output NUL --write-out "%{redirect_url}" "http://moz.runasp.net/health"
+          if ($LASTEXITCODE -ne 0 -or $redirect -notmatch '^https://moz\.runasp\.net(/|$)') { throw "HTTP to HTTPS redirect unavailable before deployment." }
+          Write-Host "Deployment configuration, HTTPS certificate and redirect passed preflight."
       - name: Install map library
         shell: pwsh
         run: |
