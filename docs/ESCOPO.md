@@ -21,3 +21,6 @@ Torre de controle com grade compacta, detalhes por seções (visão geral, audit
 
 ## Torre de controle: visões independentes
 Operador e cliente autorizado possuem Visão macro (indicadores de todo o escopo autorizado, acima do mapa de viagens ativas com última posição válida e placa visível) e Tracking de viagens (somente grade paginada, filtros e acesso ao detalhe). A visão macro não depende da paginação do tracking. Posições antigas são diferenciadas; viagens sem GPS não recebem localização inventada. Atualização incremental preserva instância do mapa e câmera. Motorista mantém Minhas viagens, sem visão da frota.
+
+## Coerência operacional da visão macro
+Visão macro não exibe contagens históricas ou filtros de período. Veículos no mapa = GPS atualizado + GPS desatualizado; ativos sem nenhuma posição válida são contabilizados à parte. Placas repetidas são agrupadas pela identidade da placa, usando a posição válida mais recente; sem placa, a viagem é a referência provisória. Etiquetas HTML de alto contraste permanecem visíveis e clicáveis; GPS desatualizado conserva a última posição. Indicadores programadas/em operação/finalizadas/canceladas aparecem apenas no tracking, sem cartão de total, respeitando o cliente selecionado e independentes da paginação. Nenhuma alteração de dados históricos.
