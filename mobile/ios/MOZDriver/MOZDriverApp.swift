@@ -140,13 +140,18 @@ struct TripScreen: View {
                         Text("Programada: " + MozDates.display(t.scheduled))
                         if !t.terminal && !localEnd { Text(authorized ? "Ativada pelo operador." : "Aguardando ativação pelo operador. GPS desligado.") }
                     }
-                    if authorized && !localEnd {
-                        if let current = d.stages.first(where: { $0.order == t.currentStage }), current.arrived != nil, current.departed == nil {
-                            Section("Etapa atual") {
-                                if current.workStart == nil { Button("INICIAR " + current.kind.uppercased()) { Task { await model.action(id, "work-start") } }.buttonStyle(.borderedProminent) }
-                                else if current.workEnd == nil { Button("FINALIZAR " + current.kind.uppercased()) { Task { await model.action(id, "work-end") } }.buttonStyle(.borderedProminent) }
+                    Section("Origem e destino") {
+                        ForEach(["origin", "destination"], id: \.self) { role in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(role == "origin" ? "Origem — coleta" : "Destino — entrega").font(.headline)
+                                if let stage = d.stages.first(where: { $0.cargoRole == role }) {
+                                    Text(stage.label); Text(stage.address.isEmpty ? "Endereço não informado" : stage.address).font(.caption)
+                                    if let lat = stage.lat, let lon = stage.lon, let url = URL(string: "https://maps.apple.com/?ll=\(lat),\(lon)") { Link("Abrir localização", destination: url) }
+                                } else { Text("Não identificada na programação original.").foregroundStyle(.secondary) }
                             }
                         }
+                    }
+                    if authorized && !localEnd {
                         if !choices.isEmpty {
                             Section("Comprovante") {
                                 Picker("Etapa", selection: Binding(get: { selectedStage?.id ?? "" }, set: { stageId = $0 })) {
