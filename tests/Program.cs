@@ -66,4 +66,8 @@ var offlineTrip=new Trip{Started=epoch,TrackingSince=epoch};
 Check(Engine.FixAuthorized(offlineTrip,epoch,epoch.AddHours(8)),"long offline period retains initial authorization");
 offlineTrip.Status="Cancelada";offlineTrip.Finished=epoch.AddHours(9);
 Check(!Engine.FixAuthorized(offlineTrip,epoch,epoch.AddHours(10)),"cancelled trip rejects later positions");
+Check(Engine.ValidCargoRoles(new string?[]{"origin",null,"destination",null}),"explicit cargo endpoints with return");
+Check(!Engine.ValidCargoRoles(new string?[]{"destination","origin"}),"cargo endpoints in sequence");
+Check(!Engine.ValidCargoRoles(new string?[]{"origin","origin","destination"}),"single origin");
+Check(!Engine.ValidCargoRoles(new string?[]{null,"destination"}),"origin required");
 Console.WriteLine("Geometry and input rules passed.");
