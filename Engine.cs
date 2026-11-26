@@ -41,7 +41,7 @@ public static class Engine {
  } else if(elapsed>t.GapSeconds){db.Events.Add(Event(t,"Lacuna GPS","Intervalo sem posições válidas","Sistema",f.At));t.StopSince=null;t.StopAlerted=false;if(stage!=null){stage.InsideCount=0;stage.OutsideCount=0;stage.FirstInside=null;stage.FirstOutside=null;}}
  }
  t.LastFix=f.At;t.LastLat=f.Lat;t.LastLon=f.Lon;t.MaxSpeed=Math.Max(t.MaxSpeed,speed);
- if(t.GapAlerted){t.GapAlerted=false;db.Events.Add(Event(t,"Comunicação restabelecida","Posição recebida","GPS",f.At));}
+ if(t.GapAlerted&&(DateTimeOffset.UtcNow-f.At).TotalSeconds<=t.GapSeconds){t.GapAlerted=false;db.Events.Add(Event(t,"Comunicação restabelecida","Posição recente recebida; dados anteriores podem ter sido sincronizados","Sistema",DateTimeOffset.UtcNow));}
  if(speed>t.SpeedLimit && !db.Events.Any(x=>x.TripId==t.Id&&x.Kind=="Excesso de velocidade"&&x.At>f.At.AddMinutes(-5)))db.Events.Add(Event(t,"Excesso de velocidade",$"Velocidade registrada: {speed:F0} km/h","GPS",f.At));
  if(observedSpeed!=null&&speed<=3){if(t.StopSince==null){t.StopSince=f.At;t.StopLat=f.Lat;t.StopLon=f.Lon;}
  else if(t.StopLat is {} slat&&t.StopLon is {} slon&&Distance(slat,slon,f.Lat,f.Lon)>Math.Max(30,f.Accuracy*2)){t.StopSince=f.At;t.StopLat=f.Lat;t.StopLon=f.Lon;t.StopAlerted=false;}
