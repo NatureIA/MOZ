@@ -149,6 +149,21 @@ public static class Api {
  return Results.Ok(new{unread,items=recent});
  });
  api.MapPost("/notices/{id:guid}/read",async(Guid id,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await db.Events.AnyAsync(x=>x.Id==id&&Visible(db,u).Any(t=>t.Id==x.TripId)))return Results.NotFound();if(!await db.Reads.AnyAsync(r=>r.UserId==u.Id&&r.EventId==id))db.Reads.Add(new ReadNotice{UserId=u.Id,EventId=id});return await Save(db);});
+ api.MapGet("/reports/trips.csv",async(HttpContext c,MozDb db,DateTimeOffset? from,DateTimeOffset? to)=>{
+ var u=await Current(c,db);if(u==null||u.Role is not("operator" or "client"))return Results.Forbid();
+ if(from.HasValue&&to.HasValue&&from.Value>=to.Value)return Bad("Período inválido.");
+ var q=Visible(db,u).AsNoTracking();
+ if(from.HasValue)q=q.Where(t=>t.Scheduled>=from.Value);if(to.HasValue)q=q.Where(t=>t.Scheduled<to.Value);
+ var rows=await q.OrderByDescending(t=>t.Scheduled).ThenBy(t=>t.Id).Take(10001).ToListAsync();
+ if(rows.Count>10000)return Bad("Selecione um período menor para exportar até 10.000 viagens.");
+ var csv=new StringBuilder("Código;Status;Motorista;Transportadora;Placa;Contêiner;Programação UTC;Início UTC;Fim UTC;Distância km;Movimento h;Parado h;Velocidade máxima km/h\r\n");
+ string Cell(string? value){var v=value??"";var trimmed=v.TrimStart();if(trimmed.Length>0&&"=+-@".Contains(trimmed[0]))v="'"+v;return "\""+v.Replace("\"","\"\"")+"\"";}
+ string Num(double value)=>value.ToString("0.00",System.Globalization.CultureInfo.GetCultureInfo("pt-BR"));
+ string Date(DateTimeOffset? value)=>value?.ToUniversalTime().ToString("O")??"";
+ foreach(var t in rows)csv.AppendLine(string.Join(";",new[]{Cell(t.Code),Cell(t.Status),Cell(t.DriverName),Cell(t.Carrier),Cell(t.Tractor),Cell(t.Container),Cell(Date(t.Scheduled)),Cell(Date(t.Started)),Cell(Date(t.Finished)),Num(t.DistanceKm),Num(t.MovingSeconds/3600),Num(t.IdleSeconds/3600),Num(t.MaxSpeed)}));
+ c.Response.Headers.CacheControl="no-store";
+ return Results.File(Encoding.UTF8.GetBytes("\uFEFF"+csv.ToString()),"text/csv; charset=utf-8","moz-viagens.csv");
+ });
  api.MapGet("/reports",async(HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null||u.Role is not("operator" or "client"))return Results.Forbid();var q=Visible(db,u);return Results.Ok(new{total=await q.CountAsync(),finalized=await q.CountAsync(t=>t.Status=="Finalizada"),active=await q.CountAsync(t=>t.Finished==null&&t.Started!=null),scheduled=await q.CountAsync(t=>t.Status=="Programada"),distanceKm=await q.SumAsync(t=>t.DistanceKm),movingHours=await q.SumAsync(t=>t.MovingSeconds)/3600,idleHours=await q.SumAsync(t=>t.IdleSeconds)/3600});});
  }
 }
