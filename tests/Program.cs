@@ -62,4 +62,8 @@ for(int sec=0;sec<=180;sec+=30){var f=Position(sec);f.Speed=null;inferredAudit.A
 Check(inferredAudit.Complete(epoch.AddSeconds(180)).Single().DurationSeconds==180,"stop inferred without device speed");
 var shortAudit=new GpsStopAudit(stopTrip,Array.Empty<Stage>());shortAudit.Add(Position(0));shortAudit.Add(Position(60));shortAudit.Add(Position(120,60));
 Check(shortAudit.Complete(epoch.AddSeconds(120)).Count==0,"short stop below configured threshold");
+var offlineTrip=new Trip{Started=epoch,TrackingSince=epoch};
+Check(Engine.FixAuthorized(offlineTrip,epoch,epoch.AddHours(8)),"long offline period retains initial authorization");
+offlineTrip.Status="Cancelada";offlineTrip.Finished=epoch.AddHours(9);
+Check(!Engine.FixAuthorized(offlineTrip,epoch,epoch.AddHours(10)),"cancelled trip rejects later positions");
 Console.WriteLine("Geometry and input rules passed.");
