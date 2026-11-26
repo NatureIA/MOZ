@@ -29,7 +29,7 @@ public static class Api {
  }
  static readonly JsonSerializerOptions TripJson=new(JsonSerializerDefaults.Web);
  static JsonObject TripView(Trip t,User u,Client? client=null){
- var view=JsonSerializer.SerializeToNode(t,TripJson)!.AsObject();
+ var view=JsonSerializer.SerializeToNode(t,TripJson)!.AsObject();view["tripReference"]=t.Container;
  if(u.Role=="operator"){view["clientName"]=client?.Name;view["clientCnpj"]=client?.Cnpj;}
  else{view.Remove("clientId");}
  return view;
@@ -107,16 +107,26 @@ public static class Api {
  if(!await db.Clients.AnyAsync(z=>z.Id==x.ClientId&&z.TenantId==u!.TenantId))return Bad("Cliente inválido.");
  var cpf=Engine.Digits(x.DriverCpf);if(!Engine.ValidCpf(cpf)||x.Stages==null||x.Stages.Length is <1 or >50||x.SpeedLimit is <10 or >150||x.MaxAccuracy is <5 or >200||x.StopSeconds is <30 or >3600||x.GapSeconds is <30 or >3600)return Bad("CPF, etapas ou parâmetros inválidos.");
  var tenant=await db.Tenants.FindAsync(u!.TenantId!.Value);if(tenant==null)return Results.Forbid();
- if(tenant.TripLimit>0&&await db.Trips.CountAsync(z=>z.TenantId==tenant.Id&&z.Finished==null)>=tenant.TripLimit)return Bad("Limite de viagens ativas atingido.");
+ var reference=Engine.NormalizeTripReference(x.TripReference??x.Container);
+ if(reference==null)return Bad("Informe o código da viagem (até 160 caracteres).");
  var driver=await db.Users.SingleOrDefaultAsync(z=>z.Cpf==cpf&&z.Role=="driver"&&z.IdentityVerified&&z.Active);
  var localDriver=await db.OperatorDrivers.SingleOrDefaultAsync(z=>z.TenantId==tenant.Id&&z.Cpf==cpf);
  if(!string.IsNullOrWhiteSpace(x.DriverName)&&!TextOk(x.DriverName))return Bad("Nome do motorista inválido.");
- var t=new Trip{TenantId=tenant.Id,ClientId=x.ClientId,DriverCpf=cpf,DriverId=driver?.Id,DriverName=driver?.Name??localDriver?.Name??x.DriverName?.Trim()??"",Carrier=x.Carrier??"",Tractor=x.Tractor??"",Trailer=x.Trailer??"",Container=x.Container??"",Scheduled=x.Scheduled,SpeedLimit=x.SpeedLimit,MaxAccuracy=x.MaxAccuracy,StopSeconds=x.StopSeconds,GapSeconds=x.GapSeconds,Code="MOZ-"+Guid.NewGuid().ToString("N").ToUpperInvariant()};
+ var t=new Trip{TenantId=tenant.Id,ClientId=x.ClientId,DriverCpf=cpf,DriverId=driver?.Id,DriverName=driver?.Name??localDriver?.Name??x.DriverName?.Trim()??"",Carrier=x.Carrier??"",Tractor=x.Tractor??"",Trailer=x.Trailer??"",Container=reference,Scheduled=x.Scheduled,SpeedLimit=x.SpeedLimit,MaxAccuracy=x.MaxAccuracy,StopSeconds=x.StopSeconds,GapSeconds=x.GapSeconds,Code="MOZ-"+Guid.NewGuid().ToString("N").ToUpperInvariant()};
  if(!string.IsNullOrWhiteSpace(x.PlannedRoute)&&(!Engine.ValidRoute(x.PlannedRoute)||x.RouteTolerance is <30 or >10000))return Bad("Rota planejada ou tolerância inválida.");
  var stages=new List<Stage>();
  for(int i=0;i<x.Stages.Length;i++){var s=x.Stages[i];var p=await db.Places.SingleOrDefaultAsync(z=>z.Id==s.PlaceId&&z.TenantId==tenant.Id);if(p==null||!TextOk(s.Label)||s.SlaMinutes<0||s.FinishOnPod&&!s.RequirePod)return Bad("Etapa inválida.");
  stages.Add(new Stage{TripId=t.Id,Order=i,Label=s.Label,Kind=s.Kind??"",Address=p.Address,Lat=p.Lat,Lon=p.Lon,Radius=p.Radius,Polygon=p.Polygon,RequirePod=s.RequirePod,FinishOnPod=s.FinishOnPod,SlaMinutes=s.SlaMinutes});}
- db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, motorista pendente de verificação":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){try{await MozRealtime.Publish(hub,t);}catch{}}return result;
+ // Serializa programações do mesmo operador no SQL Server, inclusive em múltiplas instâncias.
+ // A referência informada reaproveita a coluna Container; Code continua sendo o ID único do MOZ.
+ await using var transaction=await db.Database.BeginTransactionAsync();
+ var lockResource="MOZ:TripReference:"+tenant.Id.ToString("N");
+ try{await db.Database.ExecuteSqlInterpolatedAsync($"DECLARE @lockResult int; EXEC @lockResult = sys.sp_getapplock @Resource={lockResource}, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000; IF @lockResult < 0 THROW 51001, 'Trip reference lock unavailable.', 1;");}
+ catch(Microsoft.Data.SqlClient.SqlException ex)when(ex.Number==51001){return Results.Conflict(new{error="Outra viagem está sendo programada. Tente novamente."});}
+ var open=await db.Trips.AsNoTracking().Where(z=>z.TenantId==tenant.Id&&z.Finished==null).Select(z=>z.Container).ToListAsync();
+ if(open.Any(z=>Engine.SameTripReference(z,reference)))return Results.Conflict(new{error="Já existe uma viagem aberta com este código. Conclua ou cancele a anterior para reutilizá-lo."});
+ if(tenant.TripLimit>0&&open.Count>=tenant.TripLimit)return Bad("Limite de viagens ativas atingido.");
+ db.Trips.Add(t);db.Stages.AddRange(stages);if(!string.IsNullOrWhiteSpace(x.PlannedRoute))db.Plans.Add(new TripPlan{TripId=t.Id,Coordinates=x.PlannedRoute,ToleranceMetres=x.RouteTolerance});db.Events.Add(Engine.Event(t,"Programada",driver==null?"Viagem programada, motorista pendente de verificação":"Nova viagem programada","Operador",actor:u.Id));Record(db,u,"Programar viagem",t.Id.ToString());var result=await Save(db);if(result is Microsoft.AspNetCore.Http.IStatusCodeHttpResult sr&&sr.StatusCode==200){await transaction.CommitAsync();try{await MozRealtime.Publish(hub,t);}catch{}}return result;
  });
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();
@@ -185,9 +195,9 @@ public static class Api {
  var path=Path.Combine(storage,p.Id.ToString("N"));return File.Exists(path)?Results.File(path,"application/octet-stream",p.FileName):Results.NotFound();
  });
  api.MapGet("/notices",async(HttpContext c,MozDb db)=>{
- var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=from e in db.Events join t in Visible(db,u) on e.TripId equals t.Id select new{e,t.Code};
+ var u=await Current(c,db);if(u==null)return Results.Unauthorized();var q=from e in db.Events join t in Visible(db,u) on e.TripId equals t.Id select new{e,t.Code,TripReference=t.Container};
  var unread=await q.CountAsync(x=>!db.Reads.Any(r=>r.UserId==u.Id&&r.EventId==x.e.Id));
- var recent=await q.OrderByDescending(x=>x.e.Recorded).Take(100).Select(x=>new{x.e.Id,x.e.TripId,x.e.Kind,x.e.Message,x.e.At,x.Code,Read=db.Reads.Any(r=>r.UserId==u.Id&&r.EventId==x.e.Id)}).ToListAsync();
+ var recent=await q.OrderByDescending(x=>x.e.Recorded).Take(100).Select(x=>new{x.e.Id,x.e.TripId,x.e.Kind,x.e.Message,x.e.At,x.Code,x.TripReference,Read=db.Reads.Any(r=>r.UserId==u.Id&&r.EventId==x.e.Id)}).ToListAsync();
  return Results.Ok(new{unread,items=recent});
  });
  api.MapPost("/notices/{id:guid}/read",async(Guid id,HttpContext c,MozDb db)=>{var u=await Current(c,db);if(u==null)return Results.Unauthorized();if(!await db.Events.AnyAsync(x=>x.Id==id&&Visible(db,u).Any(t=>t.Id==x.TripId)))return Results.NotFound();if(!await db.Reads.AnyAsync(r=>r.UserId==u.Id&&r.EventId==id))db.Reads.Add(new ReadNotice{UserId=u.Id,EventId=id});return await Save(db);});
@@ -198,7 +208,7 @@ public static class Api {
  if(from.HasValue)q=q.Where(t=>t.Scheduled>=from.Value);if(to.HasValue)q=q.Where(t=>t.Scheduled<to.Value);
  var rows=await q.OrderByDescending(t=>t.Scheduled).ThenBy(t=>t.Id).Take(10001).ToListAsync();
  if(rows.Count>10000)return Bad("Selecione um período menor para exportar até 10.000 viagens.");
- var csv=new StringBuilder("Código;Status;Motorista;Transportadora;Placa;Contêiner;Programação UTC;Início UTC;Fim UTC;Distância km;Movimento h;Parado h;Velocidade máxima km/h\r\n");
+ var csv=new StringBuilder("ID MOZ;Status;Motorista;Transportadora;Placa;Código da viagem;Programação UTC;Início UTC;Fim UTC;Distância km;Movimento h;Parado h;Velocidade máxima km/h\r\n");
  string Cell(string? value){var v=value??"";var trimmed=v.TrimStart();if(trimmed.Length>0&&"=+-@".Contains(trimmed[0]))v="'"+v;return "\""+v.Replace("\"","\"\"")+"\"";}
  string Num(double value)=>value.ToString("0.00",System.Globalization.CultureInfo.GetCultureInfo("pt-BR"));
  string Date(DateTimeOffset? value)=>value?.ToUniversalTime().ToString("O")??"";
@@ -220,6 +230,6 @@ public record UserInput(string Name,string Email,string Password,string Role,Gui
 public record RegistryInput(string Kind,string Name,string Reference);
 public record PlaceInput(string Name,string Address,double Lat,double Lon,double Radius,string? Polygon,Guid? ParentId);
 public record StageInput(Guid PlaceId,string Label,string? Kind,bool RequirePod,bool FinishOnPod,int SlaMinutes);
-public record TripInput(Guid ClientId,string DriverCpf,string? Carrier,string? Tractor,string? Trailer,string? Container,DateTimeOffset Scheduled,double SpeedLimit,double MaxAccuracy,int StopSeconds,int GapSeconds,StageInput[] Stages,string? PlannedRoute=null,double RouteTolerance=200,string? DriverName=null);
+public record TripInput(Guid ClientId,string DriverCpf,string? Carrier,string? Tractor,string? Trailer,string? Container,DateTimeOffset Scheduled,double SpeedLimit,double MaxAccuracy,int StopSeconds,int GapSeconds,StageInput[] Stages,string? PlannedRoute=null,double RouteTolerance=200,string? DriverName=null,string? TripReference=null);
 public record ActionInput(string Action,string? Message);
 public record FixInput(Guid Id,DateTimeOffset At,double Lat,double Lon,double Accuracy,double? Speed);
