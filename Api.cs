@@ -131,7 +131,7 @@ public static class Api {
  api.MapGet("/driver/tracking",async(HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u?.Role!="driver"||!u.IdentityVerified)return Results.Forbid();
  var t=await db.Trips.AsNoTracking().Where(z=>z.DriverId==u.Id&&z.TrackingSince!=null&&z.Finished==null&&z.Status!="Finalizada"&&z.Status!="Cancelada"&&db.Tenants.Any(a=>a.Id==z.TenantId&&a.Active)).Select(z=>new{z.Id,z.TrackingSince}).SingleOrDefaultAsync();
- return Results.Ok(new{tripId=t?.Id,trackingSince=t?.TrackingSince,leaseSeconds=15});
+ return Results.Ok(new{tripId=t?.Id,trackingSince=t?.TrackingSince,offlineAllowed=t!=null,leaseSeconds=15});
  });
  api.MapGet("/trips/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
  var u=await Current(c,db);if(u==null)return Results.Unauthorized();var t=await Visible(db,u).SingleOrDefaultAsync(x=>x.Id==id);if(t==null)return Results.NotFound();
@@ -168,11 +168,7 @@ public static class Api {
  t.GapAlerted=false;t.StopSince=null;t.StopAlerted=false;t.StopLat=null;t.StopLon=null;
  if(s!=null){s.InsideCount=0;s.OutsideCount=0;s.FirstInside=null;s.FirstOutside=null;}
  var plan=await db.Plans.SingleOrDefaultAsync(z=>z.TripId==id);if(plan!=null){plan.OutsideCount=0;plan.InsideCount=0;}
- db.Events.Add(Engine.Event(t,first?"Operação iniciada":"Rastreamento reativado",first?"Operador ativou a viagem":"Operador retomou o rastreamento","Operador",now,u.Id));
- }else if(x.Action=="deactivate"&&Operator(u)){
- if(!Engine.TrackingActive(t))return Results.Ok();
- t.TrackingSince=null;t.GapAlerted=false;t.StopSince=null;t.StopAlerted=false;
- db.Events.Add(Engine.Event(t,"Rastreamento inativado","Operador interrompeu o rastreamento","Operador",actor:u.Id));
+ db.Events.Add(Engine.Event(t,"Operação iniciada","Operador ativou a viagem","Operador",now,u.Id));
  }else if(x.Action=="work-start"&&u.Role=="driver"&&Engine.TrackingActive(t)&&s?.Arrived!=null&&s.Departed==null&&s.WorkStart==null){s.WorkStart=DateTimeOffset.UtcNow;t.Status="Em "+s.Kind;db.Events.Add(Engine.Event(t,"Início de "+s.Kind,"Início confirmado pelo motorista","Motorista",actor:u.Id,stage:s));}
  else if(x.Action=="work-end"&&u.Role=="driver"&&Engine.TrackingActive(t)&&s?.WorkStart!=null&&s.WorkEnd==null&&s.Departed==null){s.WorkEnd=DateTimeOffset.UtcNow;t.Status=s.RequirePod?"Aguardando comprovante":s.Kind+" concluída";db.Events.Add(Engine.Event(t,"Fim de "+s.Kind,"Término confirmado pelo motorista","Motorista",actor:u.Id,stage:s));}
  else if(x.Action=="occurrence"&&(u.Role is "driver" or "operator")&&TextOk(x.Message,1000)){db.Events.Add(Engine.Event(t,"Ocorrência",x.Message!,u.Role,actor:u.Id,stage:s));}
@@ -205,22 +201,23 @@ public static class Api {
  if(!c.Request.HasFormContentType)return Bad("Envie uma fotografia ou PDF.");
  var form=await c.Request.ReadFormAsync();if(!Guid.TryParse(form["id"].ToString(),out var podId))return Bad("Identificador inválido.");
  var existing=await db.Pods.SingleOrDefaultAsync(z=>z.Id==podId&&z.TripId==id);if(existing!=null)return Results.Ok(new{status=t.Status,id=existing.Id});
- if(Engine.Terminal(t)||t.Started==null)return Bad("Viagem não está ativa.");var s=await CurrentStage(db,t);if(s?.Arrived==null)return Bad("Chegada à etapa ainda não registrada.");
+ if(!Engine.TrackingActive(t))return Bad("Viagem não está ativa.");var s=await CurrentStage(db,t);if(s?.Arrived==null)return Bad("Chegada à etapa ainda não registrada.");
+ if(form.ContainsKey("stageId")&&(!Guid.TryParse(form["stageId"].ToString(),out var stageId)||stageId!=s.Id))return Bad("O comprovante não corresponde à etapa atual. A foto permanece na fila local para conferência.");
  var file=form.Files.GetFile("file");long max=Math.Clamp(cfg.GetValue("Storage:MaxFileSizeMB",20),1,20)*1024L*1024L;
  if(file==null||file.Length<4||file.Length>max)return Bad("Arquivo inválido ou muito grande.");
  using var ms=new MemoryStream();await file.CopyToAsync(ms);var data=ms.ToArray();
  string? mime=data[0]==255&&data[1]==216&&data[2]==255?"image/jpeg":data.Length>=8&&data.AsSpan(0,8).SequenceEqual(new byte[]{137,80,78,71,13,10,26,10})?"image/png":data.Length>=12&&Encoding.ASCII.GetString(data,0,4)=="RIFF"&&Encoding.ASCII.GetString(data,8,4)=="WEBP"?"image/webp":data.Length>=5&&Encoding.ASCII.GetString(data,0,5)=="%PDF-"?"application/pdf":null;
  var ext=mime switch{"image/jpeg"=>".jpg","image/png"=>".png","image/webp"=>".webp","application/pdf"=>".pdf",_=>""};
  if(mime==null||!(cfg["Storage:AllowedExtensions"]??".jpg,.jpeg,.png,.webp,.pdf").Split(',').Contains(ext,StringComparer.OrdinalIgnoreCase))return Bad("Formato de arquivo não permitido.");
- DateTimeOffset captured=DateTimeOffset.TryParse(form["captured"].ToString(),out var when)?when:DateTimeOffset.UtcNow;
- if(captured<t.Started.Value.AddMinutes(-1)||captured>DateTimeOffset.UtcNow.AddMinutes(2))return Bad("Horário de captura inválido.");
+ if(!DateTimeOffset.TryParse(form["captured"].ToString(),out var captured))return Bad("Horário de captura inválido.");
+ if(captured<t.TrackingSince!.Value||captured<s.Arrived.Value||captured>DateTimeOffset.UtcNow.AddMinutes(2))return Bad("Horário de captura inválido.");
  var pos=await db.Fixes.Where(z=>z.TripId==id&&z.Accepted&&z.At<=captured&&z.At>=captured.AddMinutes(-2)).OrderByDescending(z=>z.At).FirstOrDefaultAsync();
  bool verified=pos!=null&&Engine.Contains(pos.Lat,pos.Lon,s.Lat,s.Lon,s.Radius,s.Polygon);
  var doc=new Pod{Id=podId,TripId=id,StageId=s.Id,DriverId=u.Id,ContentType=mime,FileName="comprovante"+ext,Bytes=data.LongLength,Sha256=Convert.ToHexString(SHA256.HashData(data)),Captured=captured,Lat=pos?.Lat,Lon=pos?.Lon,Accuracy=pos?.Accuracy,LocationVerified=verified};
  var path=Path.Combine(storage,podId.ToString("N"));try{await using(var fs=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None)){await fs.WriteAsync(data);await fs.FlushAsync();}}catch(IOException){return Results.Conflict(new{error="Documento já está sendo processado."});}
- db.Pods.Add(doc);db.Events.Add(Engine.Event(t,"Comprovante recebido",verified?"Comprovante armazenado com localização compatível":"Comprovante armazenado; localização não verificada","Motorista",actor:u.Id,stage:s));
- if(s.FinishOnPod&&verified){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,DateTimeOffset.UtcNow);}
- else if(s.Departed!=null){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,DateTimeOffset.UtcNow);}
+ db.Pods.Add(doc);db.Events.Add(Engine.Event(t,"Comprovante recebido",verified?"Comprovante armazenado com localização compatível":"Comprovante armazenado; localização não verificada","Motorista",captured,actor:u.Id,stage:s));
+ if(s.FinishOnPod&&verified){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,captured);}
+ else if(s.Departed!=null){var count=await db.Stages.CountAsync(z=>z.TripId==id);Engine.Advance(t,s,count,db,s.Departed.Value>captured?s.Departed.Value:captured);}
  try{await db.SaveChangesAsync();return Results.Ok(new{status=t.Status,id=doc.Id});}catch{File.Delete(path);throw;}
  });
  api.MapGet("/pods/{id:guid}",async(Guid id,HttpContext c,MozDb db)=>{
